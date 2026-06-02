@@ -1,65 +1,10 @@
 # Docker Compose 配置文件
-# 闲鱼自动回复系统 - 本地源码构建
-# 用法: docker compose up -d --build
+# 闲鱼自动回复系统 - 生产模式（使用外部 MySQL/Redis，代码映射）
+# 用法: 
+#   首次: docker compose up -d --build
+#   改代码后: docker compose restart
 
 services:
-  # ====== 基础设施 ======
-
-  # MySQL数据库
-  mysql:
-    image: mysql:8.0
-    container_name: xianyu-mysql
-    restart: unless-stopped
-    environment:
-      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-xianyu@2026}
-      - MYSQL_DATABASE=${MYSQL_DATABASE:-xianyu_data}
-      - MYSQL_USER=${MYSQL_USER:-xianyu}
-      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-xianyu@2026}
-      - TZ=Asia/Shanghai
-    command:
-      - --character-set-server=utf8mb4
-      - --collation-server=utf8mb4_unicode_ci
-      - --max-connections=1000
-      - --max-allowed-packet=256M
-      - --default-time-zone=+08:00
-    volumes:
-      - mysql_data:/var/lib/mysql
-    networks:
-      - xianyu-network
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-xianyu@2026}"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 30s
-
-  # Redis缓存
-  redis:
-    image: redis:7-alpine
-    container_name: xianyu-redis
-    restart: unless-stopped
-    command: >
-      redis-server
-      --requirepass ${REDIS_PASSWORD:-xianyu@2026}
-      --maxmemory 256mb
-      --maxmemory-policy allkeys-lru
-      --appendonly yes
-    environment:
-      - TZ=Asia/Shanghai
-    volumes:
-      - redis_data:/data
-    networks:
-      - xianyu-network
-    healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-xianyu@2026}", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
-
-  # ====== 应用服务 ======
-
-  # Backend-Web 服务
   backend-web:
     build:
       context: .
@@ -68,13 +13,13 @@ services:
     restart: unless-stopped
     environment:
       - ENVIRONMENT=production
-      - MYSQL_HOST=mysql
-      - MYSQL_PORT=3306
+      - MYSQL_HOST=${MYSQL_HOST:-host.docker.internal}
+      - MYSQL_PORT=${MYSQL_PORT:-3306}
       - MYSQL_USER=${MYSQL_USER:-xianyu}
       - MYSQL_PASSWORD=${MYSQL_PASSWORD:-xianyu@2026}
       - MYSQL_DATABASE=${MYSQL_DATABASE:-xianyu_data}
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
+      - REDIS_HOST=${REDIS_HOST:-host.docker.internal}
+      - REDIS_PORT=${REDIS_PORT:-6379}
       - REDIS_PASSWORD=${REDIS_PASSWORD:-xianyu@2026}
       - REDIS_DB=${REDIS_DB:-0}
       - BACKEND_WEB_PORT=8089
@@ -90,18 +35,22 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - SQL_ECHO=${SQL_ECHO:-true}
       - TZ=Asia/Shanghai
+      - PYTHONUNBUFFERED=1
+      - PYTHONPATH=/app
     volumes:
+      # 代码映射：改代码后重启即可生效
+      - ./common:/app/common
+      - ./launcher:/app/launcher
+      - ./backend-web:/app/backend-web
+      # 数据持久化
       - backend_web_logs:/app/backend-web/logs
       - static-files:/app/static
     ports:
       - "${BACKEND_WEB_PORT:-8089}:8089"
     networks:
       - xianyu-network
-    depends_on:
-      mysql:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8089/health"]
       interval: 30s
@@ -118,13 +67,13 @@ services:
     restart: unless-stopped
     environment:
       - ENVIRONMENT=production
-      - MYSQL_HOST=mysql
-      - MYSQL_PORT=3306
+      - MYSQL_HOST=${MYSQL_HOST:-host.docker.internal}
+      - MYSQL_PORT=${MYSQL_PORT:-3306}
       - MYSQL_USER=${MYSQL_USER:-xianyu}
       - MYSQL_PASSWORD=${MYSQL_PASSWORD:-xianyu@2026}
       - MYSQL_DATABASE=${MYSQL_DATABASE:-xianyu_data}
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
+      - REDIS_HOST=${REDIS_HOST:-host.docker.internal}
+      - REDIS_PORT=${REDIS_PORT:-6379}
       - REDIS_PASSWORD=${REDIS_PASSWORD:-xianyu@2026}
       - REDIS_DB=${REDIS_DB:-0}
       - WEBSOCKET_PORT=8090
@@ -135,7 +84,14 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - SQL_ECHO=${SQL_ECHO:-true}
       - TZ=Asia/Shanghai
+      - PYTHONUNBUFFERED=1
+      - PYTHONPATH=/app
     volumes:
+      # 代码映射
+      - ./common:/app/common
+      - ./launcher:/app/launcher
+      - ./websocket:/app/websocket
+      # 数据持久化
       - websocket_logs:/app/websocket/logs
       - static-files:/app/static
       - browser_data:/app/browser_data
@@ -143,11 +99,9 @@ services:
       - "${WEBSOCKET_PORT:-8090}:8090"
     networks:
       - xianyu-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
-      mysql:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
       backend-web:
         condition: service_healthy
     healthcheck:
@@ -157,7 +111,6 @@ services:
       retries: 3
       start_period: 60s
 
-  # Scheduler 服务
   scheduler:
     build:
       context: .
@@ -166,13 +119,13 @@ services:
     restart: unless-stopped
     environment:
       - ENVIRONMENT=production
-      - MYSQL_HOST=mysql
-      - MYSQL_PORT=3306
+      - MYSQL_HOST=${MYSQL_HOST:-host.docker.internal}
+      - MYSQL_PORT=${MYSQL_PORT:-3306}
       - MYSQL_USER=${MYSQL_USER:-xianyu}
       - MYSQL_PASSWORD=${MYSQL_PASSWORD:-xianyu@2026}
       - MYSQL_DATABASE=${MYSQL_DATABASE:-xianyu_data}
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
+      - REDIS_HOST=${REDIS_HOST:-host.docker.internal}
+      - REDIS_PORT=${REDIS_PORT:-6379}
       - REDIS_PASSWORD=${REDIS_PASSWORD:-xianyu@2026}
       - REDIS_DB=${REDIS_DB:-0}
       - SCHEDULER_PORT=8091
@@ -184,18 +137,23 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - SQL_ECHO=${SQL_ECHO:-true}
       - TZ=Asia/Shanghai
+      - PYTHONUNBUFFERED=1
+      - PYTHONPATH=/app
     volumes:
+      # 代码映射
+      - ./common:/app/common
+      - ./launcher:/app/launcher
+      - ./scheduler:/app/scheduler
+      # 数据持久化
       - scheduler_logs:/app/scheduler/logs
       - static-files:/app/static:ro
     ports:
       - "${SCHEDULER_PORT:-8091}:8091"
     networks:
       - xianyu-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
-      mysql:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
       websocket:
         condition: service_healthy
       backend-web:
@@ -207,19 +165,28 @@ services:
       retries: 3
       start_period: 60s
 
-  # 前端服务
   frontend:
-    build:
-      context: .
-      dockerfile: docker/frontend/Dockerfile
+    image: node:18-alpine
     container_name: xianyu-frontend
     restart: unless-stopped
     environment:
       - TZ=Asia/Shanghai
+    volumes:
+      # 源码映射：改代码后重启自动重新编译
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
     ports:
       - "${FRONTEND_PORT:-9000}:80"
     networks:
       - xianyu-network
+    working_dir: /app
+    command: >
+      sh -c "
+        npm install
+        npm run build
+        npm install -g serve
+        serve -s dist -l 80
+      "
     depends_on:
       backend-web:
         condition: service_healthy
@@ -229,10 +196,6 @@ networks:
     driver: bridge
 
 volumes:
-  mysql_data:
-    driver: local
-  redis_data:
-    driver: local
   websocket_logs:
     driver: local
   backend_web_logs:
@@ -242,4 +205,6 @@ volumes:
   static-files:
     driver: local
   browser_data:
+    driver: local
+  frontend_node_modules:
     driver: local
