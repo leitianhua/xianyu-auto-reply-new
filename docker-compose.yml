@@ -159,7 +159,7 @@ services:
       start_period: 60s
 
   frontend:
-    image: node:18-alpine
+    image: nginx:alpine
     container_name: xianyu-frontend
     restart: unless-stopped
     environment:
@@ -168,6 +168,7 @@ services:
       # 源码映射：改代码后重启自动重新编译
       - ./frontend:/app
       - frontend_node_modules:/app/node_modules
+      - ./docker/frontend/nginx.conf:/etc/nginx/conf.d/default.conf:ro
     ports:
       - "${FRONTEND_PORT:-9000}:80"
     networks:
@@ -177,8 +178,8 @@ services:
       sh -c "
         npm install
         npm run build
-        npm install -g serve
-        serve -s dist -l 80
+        cp -r dist/* /usr/share/nginx/html/
+        nginx -g 'daemon off;'
       "
     depends_on:
       backend-web:
