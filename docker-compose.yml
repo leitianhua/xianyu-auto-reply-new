@@ -13,14 +13,14 @@ services:
     restart: unless-stopped
     environment:
       - ENVIRONMENT=production
-      - MYSQL_HOST=${MYSQL_HOST:-host.docker.internal}
+      - MYSQL_HOST=${MYSQL_HOST}
       - MYSQL_PORT=${MYSQL_PORT:-3306}
-      - MYSQL_USER=${MYSQL_USER:-xianyu}
-      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-xianyu@2026}
+      - MYSQL_USER=${MYSQL_USER}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
       - MYSQL_DATABASE=${MYSQL_DATABASE:-xianyu_data}
-      - REDIS_HOST=${REDIS_HOST:-host.docker.internal}
+      - REDIS_HOST=${REDIS_HOST}
       - REDIS_PORT=${REDIS_PORT:-6379}
-      - REDIS_PASSWORD=${REDIS_PASSWORD:-xianyu@2026}
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
       - REDIS_DB=${REDIS_DB:-0}
       - BACKEND_WEB_PORT=8089
       - JWT_ALGORITHM=HS256
@@ -48,9 +48,7 @@ services:
     ports:
       - "${BACKEND_WEB_PORT:-8089}:8089"
     networks:
-      - xianyu-network
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - 1panel-network
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8089/health"]
       interval: 30s
@@ -58,7 +56,6 @@ services:
       retries: 3
       start_period: 60s
 
-  # WebSocket 服务
   websocket:
     build:
       context: .
@@ -67,14 +64,14 @@ services:
     restart: unless-stopped
     environment:
       - ENVIRONMENT=production
-      - MYSQL_HOST=${MYSQL_HOST:-host.docker.internal}
+      - MYSQL_HOST=${MYSQL_HOST}
       - MYSQL_PORT=${MYSQL_PORT:-3306}
-      - MYSQL_USER=${MYSQL_USER:-xianyu}
-      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-xianyu@2026}
+      - MYSQL_USER=${MYSQL_USER}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
       - MYSQL_DATABASE=${MYSQL_DATABASE:-xianyu_data}
-      - REDIS_HOST=${REDIS_HOST:-host.docker.internal}
+      - REDIS_HOST=${REDIS_HOST}
       - REDIS_PORT=${REDIS_PORT:-6379}
-      - REDIS_PASSWORD=${REDIS_PASSWORD:-xianyu@2026}
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
       - REDIS_DB=${REDIS_DB:-0}
       - WEBSOCKET_PORT=8090
       - MAX_CAPTCHA_CONCURRENT=${MAX_CAPTCHA_CONCURRENT:-3}
@@ -98,9 +95,7 @@ services:
     ports:
       - "${WEBSOCKET_PORT:-8090}:8090"
     networks:
-      - xianyu-network
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - 1panel-network
     depends_on:
       backend-web:
         condition: service_healthy
@@ -119,14 +114,14 @@ services:
     restart: unless-stopped
     environment:
       - ENVIRONMENT=production
-      - MYSQL_HOST=${MYSQL_HOST:-host.docker.internal}
+      - MYSQL_HOST=${MYSQL_HOST}
       - MYSQL_PORT=${MYSQL_PORT:-3306}
-      - MYSQL_USER=${MYSQL_USER:-xianyu}
-      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-xianyu@2026}
+      - MYSQL_USER=${MYSQL_USER}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
       - MYSQL_DATABASE=${MYSQL_DATABASE:-xianyu_data}
-      - REDIS_HOST=${REDIS_HOST:-host.docker.internal}
+      - REDIS_HOST=${REDIS_HOST}
       - REDIS_PORT=${REDIS_PORT:-6379}
-      - REDIS_PASSWORD=${REDIS_PASSWORD:-xianyu@2026}
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
       - REDIS_DB=${REDIS_DB:-0}
       - SCHEDULER_PORT=8091
       - REDELIVERY_INTERVAL=${REDELIVERY_INTERVAL:-5}
@@ -150,9 +145,7 @@ services:
     ports:
       - "${SCHEDULER_PORT:-8091}:8091"
     networks:
-      - xianyu-network
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - 1panel-network
     depends_on:
       websocket:
         condition: service_healthy
@@ -178,7 +171,7 @@ services:
     ports:
       - "${FRONTEND_PORT:-9000}:80"
     networks:
-      - xianyu-network
+      - 1panel-network
     working_dir: /app
     command: >
       sh -c "
@@ -192,8 +185,9 @@ services:
         condition: service_healthy
 
 networks:
-  xianyu-network:
-    driver: bridge
+  1panel-network:
+    name: 1panel-network
+    external: true
 
 volumes:
   websocket_logs:
