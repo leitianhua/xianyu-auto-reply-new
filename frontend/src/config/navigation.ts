@@ -27,6 +27,7 @@ import {
   PackageSearch,
   Repeat,
   ScrollText,
+  Search,
   Send,
   Settings,
   Shield,
@@ -119,6 +120,9 @@ export const mainNavItems: NavEntry[] = [
   { key: 'notification-channels', icon: Bell, label: '通知渠道', path: '/notification-channels' },
   { key: 'message-notifications', icon: MessageCircle, label: '消息通知', path: '/message-notifications' },
   { key: 'blacklist', icon: Ban, label: '黑名单管理', path: '/blacklist' },
+  { key: 'item-search', icon: Search, label: '商品搜索', path: '/item-search' },
+  { key: 'goofish-compass', icon: BarChart3, label: '数据罗盘', path: '/goofish-compass' },
+  { key: 'goofish-scheduled-crawler', icon: Timer, label: '定时采集', path: '/goofish-scheduled-crawler' },
   { key: 'personal-settings', icon: UserCog, label: '个人设置', path: '/personal-settings' },
 ]
 
