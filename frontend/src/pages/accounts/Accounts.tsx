@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Plus, RefreshCw, QrCode, Key, Edit2, Trash2, Power, PowerOff, X, Loader2, Clock, CheckCircle, MessageSquare, Bot, Globe, Timer, ScanFace, ChevronLeft, ChevronRight, ChevronDown, ImagePlus, Filter, Repeat, MoreHorizontal, PackageCheck, Star, ShieldCheck, Flower2, Eye, EyeOff, Ban, Download, Upload, Send } from 'lucide-react'
-import { getAccountDetailsPaginated, deleteAccount, updateAccountCookie, updateAccountStatus, updateAccountsStatusBatch, closeAccountsNoticeBatch, clearTokenCacheBatch, updateAccountRemark, addAccount, generateQRLogin, checkQRLoginStatus, passwordLogin, checkPasswordLoginStatus, updateAccountAutoConfirm, updateAccountPauseDuration, updateAccountMessageExpireTime, updateAccountLoginInfo, updateAccountScheduledRedelivery, updateAccountScheduledRate, updateAccountAutoPolish, updateAccountConfirmBeforeSend, updateAccountSendBeforeConfirm, updateAccountAutoRedFlower, updateAccountAiReplyBlockOrderedUsers, getAIReplySettings, updateAIReplySettings, testAIConnection, fetchAIModels, AI_PROVIDER_OPTIONS, AI_PROVIDER_DEFAULT_BASE_URLS, getProxyConfig, updateProxyConfig, getFaceVerificationScreenshot, deleteFaceVerificationScreenshot, getConfirmReceiptMessage, updateConfirmReceiptMessage, uploadConfirmReceiptImage, exportAccountsExcel, importAccountsExcel, type AIProviderType, type AIModelOption, type ProxyConfig, type FaceVerificationScreenshot, type AccountFilterParams } from '@/api/accounts'
+import { getAccountDetailsPaginated, deleteAccount, updateAccountCookie, updateAccountStatus, updateAccountsStatusBatch, closeAccountsNoticeBatch, clearTokenCacheBatch, updateAccountRemark, addAccount, generateQRLogin, checkQRLoginStatus, passwordLogin, checkPasswordLoginStatus, updateAccountAutoConfirm, updateAccountPauseDuration, updateAccountMessageExpireTime, updateAccountReplyDelay, updateAccountLoginInfo, updateAccountScheduledRedelivery, updateAccountScheduledRate, updateAccountAutoPolish, updateAccountConfirmBeforeSend, updateAccountSendBeforeConfirm, updateAccountAutoRedFlower, updateAccountAiReplyBlockOrderedUsers, getAIReplySettings, updateAIReplySettings, testAIConnection, fetchAIModels, AI_PROVIDER_OPTIONS, AI_PROVIDER_DEFAULT_BASE_URLS, getProxyConfig, updateProxyConfig, getFaceVerificationScreenshot, deleteFaceVerificationScreenshot, getConfirmReceiptMessage, updateConfirmReceiptMessage, uploadConfirmReceiptImage, exportAccountsExcel, importAccountsExcel, type AIProviderType, type AIModelOption, type ProxyConfig, type FaceVerificationScreenshot, type AccountFilterParams } from '@/api/accounts'
 import { getDefaultReply, updateDefaultReply, uploadDefaultReplyImage } from '@/api/keywords'
 import { getAutoRateConfig, updateAutoRateConfig } from '@/api/autoRate'
 import { checkAdminDefaultPassword } from '@/api/auth'
@@ -15,7 +15,7 @@ import { ConfirmModal } from '@/components/common/ConfirmModal'
 import { DeliveryBlockRulesModal } from './DeliveryBlockRulesModal'
 import type { AccountDetail } from '@/types'
 
-type ModalType = 'qrcode' | 'password' | 'manual' | 'edit' | 'default-reply' | 'ai-settings' | 'proxy-settings' | 'message-expire-time' | 'face-verification' | 'confirm-receipt' | 'auto-rate' | 'delivery-disabled' | null
+type ModalType = 'qrcode' | 'password' | 'manual' | 'edit' | 'default-reply' | 'ai-settings' | 'proxy-settings' | 'message-expire-time' | 'reply-delay' | 'face-verification' | 'confirm-receipt' | 'auto-rate' | 'delivery-disabled' | null
 
 interface AccountWithKeywordCount extends AccountDetail {
   keywordCount?: number
@@ -112,6 +112,9 @@ export function Accounts() {
   const [defaultReplyImage, setDefaultReplyImage] = useState('')
   const [defaultReplyEnabled, setDefaultReplyEnabled] = useState(false)
   const [defaultReplyOnce, setDefaultReplyOnce] = useState(false)
+  const [defaultReplyType, setDefaultReplyType] = useState<'text' | 'api'>('text')
+  const [defaultReplyApiUrl, setDefaultReplyApiUrl] = useState('')
+  const [defaultReplyApiTimeout, setDefaultReplyApiTimeout] = useState(80)
   const [defaultReplySaving, setDefaultReplySaving] = useState(false)
   const [defaultReplyImageUploading, setDefaultReplyImageUploading] = useState(false)
   const defaultReplyImageInputRef = useRef<HTMLInputElement>(null)
@@ -163,6 +166,8 @@ export function Accounts() {
   const [aiMaxDiscountAmount, setAiMaxDiscountAmount] = useState(100)
   const [aiMaxBargainRounds, setAiMaxBargainRounds] = useState(3)
   const [aiCustomPrompts, setAiCustomPrompts] = useState('')
+  const [aiTimeRangeStart, setAiTimeRangeStart] = useState('')
+  const [aiTimeRangeEnd, setAiTimeRangeEnd] = useState('')
   const [aiSettingsSaving, setAiSettingsSaving] = useState(false)
   const [aiSettingsLoading, setAiSettingsLoading] = useState(false)
   const [aiTesting, setAiTesting] = useState(false)
@@ -188,6 +193,11 @@ export function Accounts() {
   const [messageExpireTimeAccount, setMessageExpireTimeAccount] = useState<AccountWithKeywordCount | null>(null)
   const [messageExpireTime, setMessageExpireTime] = useState(3600)
   const [messageExpireTimeSaving, setMessageExpireTimeSaving] = useState(false)
+
+  // 自动回复延迟设置状态
+  const [replyDelayAccount, setReplyDelayAccount] = useState<AccountWithKeywordCount | null>(null)
+  const [replyDelay, setReplyDelay] = useState(0)
+  const [replyDelaySaving, setReplyDelaySaving] = useState(false)
 
   // 人脸验证状态
   const [faceVerificationAccount, setFaceVerificationAccount] = useState<AccountWithKeywordCount | null>(null)
@@ -402,6 +412,8 @@ export function Accounts() {
     setManualCookie('')
     setManualLoading(false)
     setEditPasswordVisible(false)
+    setAiTimeRangeStart('')
+    setAiTimeRangeEnd('')
   }, [clearQrCheck, clearPwdCheck])
 
   // ==================== 管理员默认密码检查 ====================
@@ -967,6 +979,9 @@ export function Accounts() {
     setDefaultReplyImage('')
     setDefaultReplyEnabled(false)
     setDefaultReplyOnce(false)
+    setDefaultReplyType('text')
+    setDefaultReplyApiUrl('')
+    setDefaultReplyApiTimeout(80)
     setActiveModal('default-reply')
     
     // 加载当前默认回复
@@ -976,6 +991,9 @@ export function Accounts() {
       setDefaultReplyImage(result.reply_image || '')
       setDefaultReplyEnabled(result.enabled || false)
       setDefaultReplyOnce(result.reply_once || false)
+      setDefaultReplyType((result.reply_type as 'text' | 'api') || 'text')
+      setDefaultReplyApiUrl(result.api_url || '')
+      setDefaultReplyApiTimeout(result.api_timeout || 80)
     } catch {
       // ignore
     }
@@ -983,10 +1001,23 @@ export function Accounts() {
 
   const handleSaveDefaultReply = async () => {
     if (!defaultReplyAccount) return
+    if (defaultReplyType === 'api' && !defaultReplyApiUrl.trim()) {
+      addToast({ type: 'warning', message: '请输入 API 地址' })
+      return
+    }
     
     try {
       setDefaultReplySaving(true)
-      const result = await updateDefaultReply(defaultReplyAccount.id, defaultReplyContent, defaultReplyEnabled, defaultReplyOnce, defaultReplyImage)
+      const result = await updateDefaultReply(
+        defaultReplyAccount.id,
+        defaultReplyContent,
+        defaultReplyEnabled,
+        defaultReplyOnce,
+        defaultReplyImage,
+        defaultReplyType,
+        defaultReplyApiUrl,
+        defaultReplyApiTimeout
+      )
       if (result.success) {
         addToast({ type: 'success', message: '默认回复已保存' })
         closeModal()
@@ -1210,6 +1241,13 @@ export function Accounts() {
       setAiMaxDiscountAmount(settings.max_discount_amount ?? 100)
       setAiMaxBargainRounds(settings.max_bargain_rounds ?? 3)
       setAiCustomPrompts(settings.custom_prompts ?? '')
+      const formatTime = (t: string | undefined | null) => {
+        if (!t) return ''
+        const parts = t.split(':')
+        return parts.length >= 2 ? `${parts[0].padStart(2, '0')}:${parts[1].padStart(2, '0')}` : t
+      }
+      setAiTimeRangeStart(formatTime(settings.ai_time_range_start))
+      setAiTimeRangeEnd(formatTime(settings.ai_time_range_end))
     } catch (error) {
       const detail = getApiErrorMessage(error, '加载AI设置失败')
       addToast({ type: 'error', message: detail })
@@ -1314,6 +1352,8 @@ export function Accounts() {
         max_discount_amount: aiMaxDiscountAmount,
         max_bargain_rounds: aiMaxBargainRounds,
         custom_prompts: aiCustomPrompts,
+        ai_time_range_start: aiTimeRangeStart,
+        ai_time_range_end: aiTimeRangeEnd,
       })
       if (!result.success) {
         addToast({ type: 'warning', message: result.message || 'AI配置未填写完整，无法开启AI回复' })
@@ -1355,6 +1395,8 @@ export function Accounts() {
         max_discount_amount: aiMaxDiscountAmount,
         max_bargain_rounds: aiMaxBargainRounds,
         custom_prompts: aiCustomPrompts,
+        ai_time_range_start: aiTimeRangeStart,
+        ai_time_range_end: aiTimeRangeEnd,
       })
       if (!saveResult.success) {
         addToast({ type: 'warning', message: saveResult.message || 'AI配置未填写完整，无法测试AI连接' })
@@ -1470,6 +1512,33 @@ export function Accounts() {
       addToast({ type: 'error', message: '保存失败' })
     } finally {
       setMessageExpireTimeSaving(false)
+    }
+  }
+
+  // ==================== 自动回复延迟设置 ====================
+  const openReplyDelayModal = (account: AccountWithKeywordCount) => {
+    setReplyDelayAccount(account)
+    setReplyDelay(account.reply_delay_seconds || 0)
+    setActiveModal('reply-delay')
+  }
+
+  const handleSaveReplyDelay = async () => {
+    if (!replyDelayAccount) return
+
+    try {
+      setReplyDelaySaving(true)
+      const result = await updateAccountReplyDelay(replyDelayAccount.id, replyDelay)
+      if (result.success) {
+        addToast({ type: 'success', message: '自动回复延迟时间已保存' })
+        closeModal()
+        loadAccounts()
+      } else {
+        addToast({ type: 'error', message: result.message || '保存失败' })
+      }
+    } catch {
+      addToast({ type: 'error', message: '保存失败' })
+    } finally {
+      setReplyDelaySaving(false)
     }
   }
 
@@ -2334,6 +2403,13 @@ export function Accounts() {
                       <span className="text-slate-700 dark:text-slate-300">消息等待</span>
                     </button>
                     <button
+                      onClick={() => { openReplyDelayModal(account); setMoreMenuAccountId(null) }}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-xs hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors"
+                    >
+                      <Clock className="w-3.5 h-3.5 text-amber-500" />
+                      <span className="text-slate-700 dark:text-slate-300">延迟回复</span>
+                    </button>
+                    <button
                       onClick={() => { openFaceVerificationModal(account); setMoreMenuAccountId(null) }}
                       className="w-full flex items-center gap-2 px-3 py-2 text-xs hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors"
                     >
@@ -2859,6 +2935,82 @@ export function Accounts() {
                 </button>
               </div>
 
+              {/* 回复类型选择 */}
+              <div className="input-group">
+                <label className="input-label">回复类型</label>
+                <div className="flex gap-2">
+                  {([
+                    { value: 'text', label: '默认回复' },
+                    { value: 'api', label: 'API接口' },
+                  ] as const).map((opt) => (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      onClick={() => setDefaultReplyType(opt.value)}
+                      className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors border ${
+                        defaultReplyType === opt.value
+                          ? 'bg-blue-600 text-white border-blue-600'
+                          : 'bg-white dark:bg-slate-700 text-slate-600 dark:text-slate-300 border-slate-300 dark:border-slate-600 hover:border-blue-400'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* API 接口配置（仅 API 类型显示） */}
+              {defaultReplyType === 'api' && (
+                <>
+                  <div className="input-group">
+                    <label className="input-label">API 地址</label>
+                    <input
+                      type="text"
+                      value={defaultReplyApiUrl}
+                      onChange={(e) => setDefaultReplyApiUrl(e.target.value)}
+                      className="input-ios"
+                      placeholder="https://example.com/api/reply"
+                    />
+                  </div>
+                  <div className="input-group">
+                    <label className="input-label">超时时间（秒）</label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={120}
+                      value={defaultReplyApiTimeout}
+                      onChange={(e) => setDefaultReplyApiTimeout(Number(e.target.value) || 80)}
+                      className="input-ios"
+                      placeholder="80"
+                    />
+                  </div>
+                  <div className="p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg space-y-2">
+                    <p className="text-xs text-blue-600 dark:text-blue-400">
+                      <strong>调用说明：</strong>触发默认回复时，系统会向上述地址发起 <code className="bg-blue-100 dark:bg-blue-800 px-1 rounded">POST</code> 请求，
+                      请求体为 JSON：
+                    </p>
+                    <pre className="text-xs bg-blue-100 dark:bg-blue-800 p-2 rounded overflow-x-auto whitespace-pre-wrap break-all">{`{
+  "account_id": "闲鱼账号标识",
+  "message": "买家发来的消息内容"
+}`}</pre>
+                    <p className="text-xs text-blue-600 dark:text-blue-400">
+                      <strong>返回格式：</strong>兼容以下两种，任选其一：
+                    </p>
+                    <pre className="text-xs bg-blue-100 dark:bg-blue-800 p-2 rounded overflow-x-auto whitespace-pre-wrap break-all">{`// 方式一：JSON
+{ "success": true, "reply": "要发送给买家的内容" }
+
+// 方式二：纯文本
+要发送给买家的内容`}</pre>
+                    <p className="text-xs text-amber-600 dark:text-amber-400">
+                      返回内容支持用 <code className="bg-blue-100 dark:bg-blue-800 px-1 rounded">######</code> 分隔为多条消息依次发送。
+                      接口调用失败、超时或返回空内容时，将不发送任何回复。
+                    </p>
+                  </div>
+                </>
+              )}
+
+              {/* 文本回复内容（API 类型时隐藏） */}
+              {defaultReplyType !== 'api' && (
               <div className="input-group">
                 <label className="input-label">默认回复内容</label>
                 <textarea
@@ -2871,8 +3023,10 @@ export function Accounts() {
                   当没有匹配到任何关键词且AI回复未启用时，将使用此默认回复。
                 </p>
               </div>
+              )}
 
-              {/* 图片上传 */}
+              {/* 图片上传（默认回复类型显示，与文本一起） */}
+              {defaultReplyType !== 'api' && (
               <div className="input-group">
                 <label className="input-label">回复图片（可选）</label>
                 <input
@@ -2924,7 +3078,10 @@ export function Accounts() {
                   发送顺序：如果同时配置了图片和文字，将先发送图片，再发送文字内容
                 </p>
               </div>
+              )}
 
+              {/* 变量说明（API 类型时隐藏） */}
+              {defaultReplyType !== 'api' && (
               <div className="p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
                 <p className="text-xs text-blue-600 dark:text-blue-400">
                   <strong>支持变量：</strong><br />
@@ -2937,6 +3094,7 @@ export function Accounts() {
                   例如：第一条消息######第二条消息
                 </p>
               </div>
+              )}
             </div>
             <div className="modal-footer">
               <button type="button" onClick={closeModal} className="btn-ios-secondary" disabled={defaultReplySaving}>
@@ -3004,6 +3162,64 @@ export function Accounts() {
                       />
                     </button>
                   </div>
+
+                  {/* 启用时间段选择 */}
+                  {aiEnabled && (
+                    <div className="bg-slate-50 dark:bg-slate-800/40 rounded-xl p-3.5 border border-slate-100 dark:border-slate-800 space-y-3 transition-all duration-300">
+                      <div className="flex items-center justify-between">
+                        <label className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">启用时间范围</label>
+                        {(aiTimeRangeStart || aiTimeRangeEnd) && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setAiTimeRangeStart('')
+                              setAiTimeRangeEnd('')
+                            }}
+                            className="text-xs text-rose-500 hover:text-rose-600 dark:text-rose-400 dark:hover:text-rose-300 font-medium transition-colors"
+                          >
+                            重置为全天
+                          </button>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <div className="flex-1 relative">
+                          <input
+                            type="time"
+                            value={aiTimeRangeStart}
+                            onChange={(e) => setAiTimeRangeStart(e.target.value)}
+                            className="input-ios w-full pl-3 pr-10 text-sm font-medium"
+                          />
+                          <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] font-bold text-slate-400 dark:text-slate-500 pointer-events-none uppercase">
+                            开始
+                          </span>
+                        </div>
+                        <span className="text-slate-400 dark:text-slate-600 text-xs font-medium">至</span>
+                        <div className="flex-1 relative">
+                          <input
+                            type="time"
+                            value={aiTimeRangeEnd}
+                            onChange={(e) => setAiTimeRangeEnd(e.target.value)}
+                            className="input-ios w-full pl-3 pr-10 text-sm font-medium"
+                          />
+                          <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] font-bold text-slate-400 dark:text-slate-500 pointer-events-none uppercase">
+                            结束
+                          </span>
+                        </div>
+                      </div>
+                      <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                        {aiTimeRangeStart && aiTimeRangeEnd ? (
+                          <span>
+                            当前配置：每天 <strong className="text-blue-600 dark:text-blue-400">{aiTimeRangeStart}</strong> 到 <strong className="text-blue-600 dark:text-blue-400">{aiTimeRangeEnd}</strong>
+                            {aiTimeRangeStart > aiTimeRangeEnd ? <span className="text-amber-500 dark:text-amber-400 font-medium">（跨天至次日）</span> : ''} 启用AI自动回复。其余时间将使用普通规则回复。
+                          </span>
+                        ) : (
+                          <span className="text-slate-400 dark:text-slate-500">
+                            未设置时间范围，默认全天 24 小时启用AI自动回复。
+                          </span>
+                        )}
+                      </p>
+                    </div>
+                  )}
 
                   {/* API配置 */}
                   <div className="border-t border-slate-200 dark:border-slate-700 pt-4">
@@ -3527,6 +3743,110 @@ export function Accounts() {
                 disabled={messageExpireTimeSaving}
               >
                 {messageExpireTimeSaving ? (
+                  <span className="flex items-center gap-2">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    保存中...
+                  </span>
+                ) : (
+                  '保存'
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 自动回复延迟设置弹窗 */}
+      {activeModal === 'reply-delay' && replyDelayAccount && (
+        <div className="modal-overlay">
+          <div className="modal-content max-w-md">
+            <div className="modal-header">
+              <h2 className="modal-title">自动回复延迟</h2>
+              <button onClick={closeModal} className="modal-close">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="modal-body space-y-4">
+              <div className="bg-blue-50 dark:bg-blue-900/20 rounded-lg p-3 text-sm text-blue-700 dark:text-blue-300">
+                <p>账号: <span className="font-medium">{replyDelayAccount.id}</span></p>
+              </div>
+
+              <div className="input-group">
+                <label className="input-label">延迟时间（秒）</label>
+                <input
+                  type="number"
+                  value={replyDelay}
+                  onChange={(e) => setReplyDelay(Math.max(0, Math.min(3600, parseInt(e.target.value) || 0)))}
+                  className="input-ios"
+                  min={0}
+                  max={3600}
+                  step={1}
+                />
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                  {replyDelay === 0
+                    ? '当前设置: 立即回复（不延迟）'
+                    : `当前设置: 延迟 ${replyDelay} 秒后回复`}
+                </p>
+              </div>
+
+              <div className="grid grid-cols-5 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setReplyDelay(0)}
+                  className={`px-3 py-2 text-xs rounded-lg border transition-colors ${replyDelay === 0 ? 'bg-blue-500 text-white border-blue-500' : 'border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800'}`}
+                >
+                  立即
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setReplyDelay(3)}
+                  className={`px-3 py-2 text-xs rounded-lg border transition-colors ${replyDelay === 3 ? 'bg-blue-500 text-white border-blue-500' : 'border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800'}`}
+                >
+                  3秒
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setReplyDelay(5)}
+                  className={`px-3 py-2 text-xs rounded-lg border transition-colors ${replyDelay === 5 ? 'bg-blue-500 text-white border-blue-500' : 'border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800'}`}
+                >
+                  5秒
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setReplyDelay(10)}
+                  className={`px-3 py-2 text-xs rounded-lg border transition-colors ${replyDelay === 10 ? 'bg-blue-500 text-white border-blue-500' : 'border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800'}`}
+                >
+                  10秒
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setReplyDelay(30)}
+                  className={`px-3 py-2 text-xs rounded-lg border transition-colors ${replyDelay === 30 ? 'bg-blue-500 text-white border-blue-500' : 'border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800'}`}
+                >
+                  30秒
+                </button>
+              </div>
+
+              <div className="bg-slate-50 dark:bg-slate-800/50 rounded-lg p-3 text-xs text-slate-500 dark:text-slate-400">
+                <p className="font-medium mb-1">说明：</p>
+                <ul className="space-y-0.5 list-disc list-inside">
+                  <li>自动回复在发送前会先等待设定的秒数</li>
+                  <li>设为0表示立即回复，不做延迟</li>
+                  <li>延迟可让回复显得更自然，降低风控风险</li>
+                  <li>最大可设置 3600 秒（1小时）</li>
+                </ul>
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button type="button" onClick={closeModal} className="btn-ios-secondary" disabled={replyDelaySaving}>
+                取消
+              </button>
+              <button
+                onClick={handleSaveReplyDelay}
+                className="btn-ios-primary"
+                disabled={replyDelaySaving}
+              >
+                {replyDelaySaving ? (
                   <span className="flex items-center gap-2">
                     <Loader2 className="w-4 h-4 animate-spin" />
                     保存中...

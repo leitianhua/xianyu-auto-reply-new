@@ -42,6 +42,19 @@ class DeliverOrderRequest(BaseModel):
     quantity: int = 1
 
 
+class ConfirmNoLogisticsRequest(BaseModel):
+    account_id: str
+    order_no: str
+    item_id: str
+    buyer_id: str = ""
+    is_bargain: bool = False
+
+
+class CancelOrderRequest(BaseModel):
+    account_id: str
+    order_no: str
+
+
 class CreateChatRequest(BaseModel):
     """创建单聊会话请求
     
@@ -390,6 +403,65 @@ async def send_message(account_id: str, request: SendMessageRequest):
             "message": f"发送消息失败: {str(e)}",
             "data": None,
         }
+
+
+@router.post("/orders/confirm-no-logistics")
+async def confirm_no_logistics(request: ConfirmNoLogisticsRequest):
+    """无物流发货：在闲鱼确认发货但不发送任何卡券内容"""
+    from app.services.xianyu.cookie_manager import get_manager
+    from common.db.session import async_session_maker
+    from common.services.order_service import OrderService
+
+    xianyu_live = get_manager().instances.get(request.account_id)
+    if not xianyu_live:
+        return {"success": False, "code": 404, "message": "账号未连接", "data": None}
+
+    if request.is_bargain:
+        result = await xianyu_live.auto_delivery_handler.auto_freeshipping(
+            request.order_no, request.item_id, request.buyer_id
+        )
+    else:
+        result = await xianyu_live.auto_delivery_handler.auto_confirm(
+            request.order_no, request.item_id
+        )
+
+    if not result or not result.get("success"):
+        message = (result or {}).get("error") or (result or {}).get("message") or "无物流发货失败"
+        return {"success": False, "code": 400, "message": message, "data": result}
+
+    async with async_session_maker() as session:
+        await OrderService(session).update_order_delivery_info(
+            request.order_no,
+            status="shipped",
+            delivery_method="manual",
+            delivery_content="无物流发货",
+        )
+
+    return {"success": True, "code": 200, "message": "无物流发货成功", "data": result}
+
+
+@router.post("/orders/cancel")
+async def cancel_order(request: CancelOrderRequest):
+    """卖家关闭（取消）订单"""
+    from app.services.xianyu.cookie_manager import get_manager
+    from common.db.session import async_session_maker
+    from common.models import XYOrder
+    from sqlalchemy import update
+
+    xianyu_live = get_manager().instances.get(request.account_id)
+    if not xianyu_live:
+        return {"success": False, "code": 404, "message": "账号未连接", "data": None}
+
+    closed = await xianyu_live.auto_delivery_handler.close_order_by_seller(request.order_no)
+    if not closed:
+        return {"success": False, "code": 400, "message": "取消订单失败，请检查闲鱼订单状态", "data": None}
+
+    async with async_session_maker() as session:
+        await session.execute(
+            update(XYOrder).where(XYOrder.order_no == request.order_no).values(status="cancelled")
+        )
+        await session.commit()
+    return {"success": True, "code": 200, "message": "订单已取消", "data": {"order_no": request.order_no}}
 
 
 @router.post("/orders/deliver")
@@ -872,6 +944,11 @@ async def deliver_order(request: DeliverOrderRequest):
             _seller_info = db_manager.get_cookie_by_id(account_id)
             if _seller_info:
                 _order_context['seller_name'] = _seller_info.get('remark') or account_id or ''
+            # 买家明文昵称：复用自动发货同一套逻辑（pre_check 阶段已获取 _current_buyer_fish_nick，
+            # 缺失则用 chat_id 实时查 mtop user.query），手动发货无推送昵称，兜底传空
+            _order_context['buyer_name'] = await xianyu_live.auto_delivery_handler._resolve_buyer_name_for_variable(
+                card.description or '', request.chat_id, ''
+            )
         except Exception:
             pass
 
@@ -923,7 +1000,8 @@ async def deliver_order(request: DeliverOrderRequest):
                     rule=rule,
                     order_id=request.order_no,
                     item_id=request.item_id,
-                    buyer_id=request.buyer_id
+                    buyer_id=request.buyer_id,
+                    chat_id=request.chat_id
                 )
                 if not content:
                     if not raw_contents:

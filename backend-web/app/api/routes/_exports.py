@@ -25,6 +25,8 @@ from . import (
     distribution,
     chat_new,
     chat_new_ws,
+    chat_quick_phrase,
+    chat_customer_order,
     payment,
     confirm_receipt_messages,
     api_cookie_renew_logs,
@@ -53,6 +55,7 @@ from . import (
     qrcode,
     risk_control_logs,
     account_login_logs,
+    db_backup_logs,
     search,
     shared_scan,
     system_settings,
@@ -119,6 +122,7 @@ api_router.include_router(feedback.router, prefix="/feedbacks", tags=["反馈管
 api_router.include_router(advertisements.router, prefix="/advertisements", tags=["广告管理"])
 api_router.include_router(auto_reply_logs.router, tags=["消息日志"])
 api_router.include_router(account_login_logs.router, tags=["账号登录日志"])
+api_router.include_router(db_backup_logs.router, tags=["数据库备份日志"])
 api_router.include_router(risk_control_logs.router, tags=["风控日志"])
 
 # 管理员功能
@@ -157,6 +161,8 @@ api_router.include_router(search.router, tags=["商品搜索"])  # 已定义pref
 # 在线聊天
 api_router.include_router(chat_new.router, tags=["在线聊天(新)"])  # 已定义prefix="/chat-new"
 api_router.include_router(chat_new_ws.router, tags=["在线聊天(新)WebSocket"])  # 已定义prefix="/chat-new"
+api_router.include_router(chat_quick_phrase.router, tags=["在线聊天(新)快捷短语"])  # 已定义prefix="/chat-new"
+api_router.include_router(chat_customer_order.router, tags=["在线聊天(新)客户订单"])  # 已定义prefix="/chat-new"
 # 版本检测（公开接口，无需登录即可查询版本信息）
 api_router.include_router(version.router, tags=["版本检测"])  # 已定义prefix="/version"
 

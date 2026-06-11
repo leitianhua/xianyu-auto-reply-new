@@ -77,6 +77,7 @@ export const getAccountDetailsPaginated = async (
     remark?: string
     pause_duration?: number
     message_expire_time?: number
+    reply_delay_seconds?: number
     username?: string
     login_password?: string
     show_browser?: boolean
@@ -146,6 +147,7 @@ export const getAccountDetailsPaginated = async (
       note: item.remark,
       pause_duration: item.pause_duration,
       message_expire_time: item.message_expire_time,
+      reply_delay_seconds: item.reply_delay_seconds,
       username: item.username,
       login_password: item.login_password,
       show_browser: item.show_browser,
@@ -227,6 +229,11 @@ export const updateAccountPauseDuration = (id: string, pauseDuration: number): P
 // 更新相同消息等待时间
 export const updateAccountMessageExpireTime = (id: string, messageExpireTime: number): Promise<ApiResponse> => {
   return put(`${COOKIE_PREFIX}/${id}/message-expire-time`, { message_expire_time: messageExpireTime })
+}
+
+// 更新自动回复延迟时间
+export const updateAccountReplyDelay = (id: string, replyDelaySeconds: number): Promise<ApiResponse> => {
+  return put(`${COOKIE_PREFIX}/${id}/reply-delay`, { reply_delay_seconds: replyDelaySeconds })
 }
 
 // 更新定时补发货开关
@@ -438,6 +445,8 @@ export interface AIReplySettings {
   max_discount_amount?: number
   max_bargain_rounds?: number
   custom_prompts?: string
+  ai_time_range_start?: string
+  ai_time_range_end?: string
   // 兼容旧字段（前端内部使用）
   enabled?: boolean
 }
@@ -472,6 +481,8 @@ export const updateAIReplySettings = (cookieId: string, settings: Partial<AIRepl
   if (settings.max_discount_amount !== undefined) payload.max_discount_amount = settings.max_discount_amount
   if (settings.max_bargain_rounds !== undefined) payload.max_bargain_rounds = settings.max_bargain_rounds
   if (settings.custom_prompts !== undefined) payload.custom_prompts = settings.custom_prompts
+  if (settings.ai_time_range_start !== undefined) payload.ai_time_range_start = settings.ai_time_range_start
+  if (settings.ai_time_range_end !== undefined) payload.ai_time_range_end = settings.ai_time_range_end
   return put(`${AI_SETTINGS_PREFIX}/${cookieId}`, payload)
 }
 

@@ -76,6 +76,10 @@ SCHEDULER_PORT=8091
 IMAGE_REGISTRY=registry.cn-shanghai.aliyuncs.com/zhinian-software
 IMAGE_TAG=latest
 
+# 基础镜像（MySQL / Redis，从阿里云仓库拉取，由 sync_base_images.sh 同步上传）
+MYSQL_IMAGE=registry.cn-shanghai.aliyuncs.com/zhinian-software/xianyu-mysql:8.0
+REDIS_IMAGE=registry.cn-shanghai.aliyuncs.com/zhinian-software/xianyu-redis:7-alpine
+
 # 日志级别
 LOG_LEVEL=INFO
 
@@ -108,9 +112,9 @@ cat > "$COMPOSE_FILE" << 'COMPOSEEOF'
 services:
   # ====== 基础设施 ======
 
-  # MySQL数据库
+  # MySQL数据库（默认从阿里云仓库拉取，可通过 MYSQL_IMAGE 覆盖）
   mysql:
-    image: mysql:8.0
+    image: ${MYSQL_IMAGE:-registry.cn-shanghai.aliyuncs.com/zhinian-software/xianyu-mysql:8.0}
     container_name: xianyu-mysql
     restart: unless-stopped
     environment:
@@ -135,9 +139,9 @@ services:
       retries: 10
       start_period: 30s
 
-  # Redis缓存
+  # Redis缓存（默认从阿里云仓库拉取，可通过 REDIS_IMAGE 覆盖）
   redis:
-    image: redis:7-alpine
+    image: ${REDIS_IMAGE:-registry.cn-shanghai.aliyuncs.com/zhinian-software/xianyu-redis:7-alpine}
     container_name: xianyu-redis
     restart: unless-stopped
     command: >
@@ -185,6 +189,7 @@ services:
       - WEBSOCKET_SERVICE_URL=http://websocket:8090
       - SCHEDULER_SERVICE_URL=http://scheduler:8091
       - STATIC_DIR=/app/static
+      - BACKUP_DIR=/app/backups
       - BACKEND_WEB_PUBLIC_URL=${BACKEND_WEB_PUBLIC_URL:-}
       - BROWSER_HEADLESS=true
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
@@ -193,6 +198,7 @@ services:
     volumes:
       - ./xianyu_auto_reply/logs/backend_web:/app/backend-web/logs
       - ./xianyu_auto_reply/static:/app/static
+      - ./xianyu_auto_reply/backups:/app/backups
     ports:
       - "${BACKEND_WEB_PORT:-8089}:8089"
     networks:
@@ -277,12 +283,14 @@ services:
       - WEBSOCKET_SERVICE_URL=http://websocket:8090
       - BACKEND_WEB_SERVICE_URL=http://backend-web:8089
       - STATIC_DIR=/app/static
+      - BACKUP_DIR=/app/backups
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - SQL_ECHO=${SQL_ECHO:-true}
       - TZ=Asia/Shanghai
     volumes:
       - ./xianyu_auto_reply/logs/scheduler:/app/scheduler/logs
       - ./xianyu_auto_reply/static:/app/static:ro
+      - ./xianyu_auto_reply/backups:/app/backups
     ports:
       - "${SCHEDULER_PORT:-8091}:8091"
     networks:
@@ -375,6 +383,7 @@ mkdir -p \
     "$WORK_DIR/xianyu_auto_reply/logs/websocket" \
     "$WORK_DIR/xianyu_auto_reply/logs/scheduler" \
     "$WORK_DIR/xianyu_auto_reply/static" \
+    "$WORK_DIR/xianyu_auto_reply/backups" \
     "$WORK_DIR/xianyu_auto_reply/browser_data"
 
 # ========== 部署 ==========

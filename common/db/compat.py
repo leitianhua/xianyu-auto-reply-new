@@ -42,11 +42,12 @@ def _get_thread_local_session_maker():
         engine = create_async_engine(
             settings.async_database_url,
             echo=False,
-            pool_pre_ping=False,  # 关闭 pre_ping（asyncmy 新版本不兼容）
+            pool_pre_ping=settings.db_pool_pre_ping,  # 取连接前 ping，剔除失效连接（asyncmy ping 已在 session 层做兼容修补）
             pool_size=1,   # 兼容层线程为一次性，单协程只需 1 条连接（原 3，避免连接累积）
             max_overflow=2,  # 仅留少量溢出余量（原 5），降低单引擎最大连接数 8 -> 3
-            pool_timeout=30,  # 获取连接超时时间
-            pool_recycle=600,  # 连接回收时间（10分钟），防止MySQL断开
+            pool_timeout=settings.db_pool_timeout,  # 获取连接超时时间
+            pool_recycle=settings.db_pool_recycle,  # 连接回收时间，防止MySQL断开陈旧连接
+            connect_args={"connect_timeout": settings.db_connect_timeout},  # TCP 建连超时，远程库不可达时快速失败
         )
         _thread_local.engine = engine
         _thread_local.session_maker = async_sessionmaker(engine, expire_on_commit=False)
@@ -158,6 +159,20 @@ class DBManagerCompat:
                 account = result.scalars().first()
                 if not account:
                     return None
+                
+                # 尝试获取账号昵称，若为空则从 cookie 中解析 tracknick，若仍为空则回退使用备注
+                display_name = account.display_name
+                if not display_name:
+                    try:
+                        from common.utils.xianyu_utils import trans_cookies
+                        from urllib.parse import unquote
+                        cookie_dict = trans_cookies(account.cookie)
+                        tracknick = cookie_dict.get("tracknick")
+                        if tracknick:
+                            display_name = unquote(tracknick)
+                    except Exception:
+                        pass
+
                 return {
                     'id': account.id,
                     'cookie_id': account.account_id,
@@ -165,6 +180,7 @@ class DBManagerCompat:
                     'user_id': account.owner_id,
                     'auto_confirm': account.auto_confirm,
                     'remark': account.remark,
+                    'display_name': display_name or account.remark,
                     'pause_duration': account.pause_duration,
                     'username': account.username,
                     'password': account.login_password,
@@ -454,6 +470,8 @@ class DBManagerCompat:
                     values['processing_result'] = kwargs['processing_result']
                 if 'processing_status' in kwargs:
                     values['processing_status'] = kwargs['processing_status']
+                if 'captcha_engine' in kwargs:
+                    values['captcha_engine'] = kwargs['captcha_engine']
                 if 'error_message' in kwargs:
                     values['error_message'] = kwargs['error_message']
                 if not values:
@@ -587,6 +605,7 @@ class DBManagerCompat:
                         'event_description': log.event_description,
                         'processing_status': log.processing_status,
                         'processing_result': log.processing_result,
+                        'captcha_engine': log.captcha_engine,
                         'error_message': log.error_message,
                         'created_at': log.created_at.strftime('%Y-%m-%d %H:%M:%S') if log.created_at else None
                     }
@@ -889,271 +908,8 @@ class DBManagerCompat:
             return False
     
     # ==================== 默认回复 ====================
-    
-    def get_default_reply(self, cookie_id: str, item_id: str = None) -> Optional[Dict[str, Any]]:
-        """获取默认回复设置（账号级别，item_id为空）"""
-        async def _query(session_maker):
-            try:
-                async with session_maker() as session:
-                    # 查询账号级别的默认回复（item_id IS NULL）
-                    stmt = select(DefaultReply).where(
-                        and_(
-                            DefaultReply.account_id == cookie_id,
-                            DefaultReply.item_id.is_(None)
-                        )
-                    )
-                    result = await session.execute(stmt)
-                    default_reply = result.scalar_one_or_none()
-                    if default_reply:
-                        return {
-                            'enabled': default_reply.enabled,
-                            'reply_content': default_reply.reply_content,
-                            'reply_image': getattr(default_reply, 'reply_image', '') or '',
-                            'reply_once': default_reply.reply_once
-                        }
-                    return None
-            except Exception as e:
-                logger.warning(f"获取默认回复失败（表可能不存在）: {e}")
-                return None
-        return self._run_async(_query)
-    
-    def get_item_default_reply(self, cookie_id: str, item_id: str) -> Optional[Dict[str, Any]]:
-        """获取商品级别的默认回复设置"""
-        if not item_id:
-            return None
-            
-        async def _query(session_maker):
-            try:
-                async with session_maker() as session:
-                    # 查询商品级别的默认回复
-                    stmt = select(DefaultReply).where(
-                        and_(
-                            DefaultReply.account_id == cookie_id,
-                            DefaultReply.item_id == item_id
-                        )
-                    )
-                    result = await session.execute(stmt)
-                    default_reply = result.scalar_one_or_none()
-                    if default_reply:
-                        return {
-                            'enabled': default_reply.enabled,
-                            'reply_content': default_reply.reply_content,
-                            'reply_image': getattr(default_reply, 'reply_image', '') or '',
-                            'reply_once': default_reply.reply_once,
-                            'item_id': default_reply.item_id
-                        }
-                    return None
-            except Exception as e:
-                logger.warning(f"获取商品默认回复失败: {e}")
-                return None
-        return self._run_async(_query)
-    
-    def has_default_reply_record(self, cookie_id: str, chat_id: str, item_id: str = None) -> bool:
-        """检查是否已有默认回复记录（用于只回复一次功能）
-        
-        Args:
-            cookie_id: 账号标识
-            chat_id: 用户ID
-            item_id: 商品ID，为空表示账号级别
-        """
-        from common.models.default_reply import DefaultReplyRecord
-        
-        async def _query(session_maker):
-            try:
-                async with session_maker() as session:
-                    if item_id:
-                        # 商品级别的记录
-                        stmt = select(DefaultReplyRecord).where(
-                            and_(
-                                DefaultReplyRecord.account_id == cookie_id,
-                                DefaultReplyRecord.item_id == item_id,
-                                DefaultReplyRecord.user_id == chat_id
-                            )
-                        )
-                    else:
-                        # 账号级别的记录
-                        stmt = select(DefaultReplyRecord).where(
-                            and_(
-                                DefaultReplyRecord.account_id == cookie_id,
-                                DefaultReplyRecord.item_id.is_(None),
-                                DefaultReplyRecord.user_id == chat_id
-                            )
-                        )
-                    result = await session.execute(stmt)
-                    record = result.scalar_one_or_none()
-                    return record is not None
-            except Exception as e:
-                logger.warning(f"检查默认回复记录失败: {e}")
-                return False
-        return self._run_async(_query)
-    
-    def add_default_reply_record(self, cookie_id: str, chat_id: str, item_id: str = None) -> bool:
-        """添加默认回复记录
-        
-        Args:
-            cookie_id: 账号标识
-            chat_id: 用户ID
-            item_id: 商品ID，为空表示账号级别
-        """
-        from common.models.default_reply import DefaultReplyRecord
-        
-        async def _query(session_maker):
-            try:
-                async with session_maker() as session:
-                    # 先检查是否已存在
-                    if item_id:
-                        stmt = select(DefaultReplyRecord).where(
-                            and_(
-                                DefaultReplyRecord.account_id == cookie_id,
-                                DefaultReplyRecord.item_id == item_id,
-                                DefaultReplyRecord.user_id == chat_id
-                            )
-                        )
-                    else:
-                        stmt = select(DefaultReplyRecord).where(
-                            and_(
-                                DefaultReplyRecord.account_id == cookie_id,
-                                DefaultReplyRecord.item_id.is_(None),
-                                DefaultReplyRecord.user_id == chat_id
-                            )
-                        )
-                    result = await session.execute(stmt)
-                    existing = result.scalar_one_or_none()
-                    
-                    if not existing:
-                        record = DefaultReplyRecord(
-                            account_id=cookie_id,
-                            item_id=item_id,
-                            user_id=chat_id
-                        )
-                        session.add(record)
-                        await session.commit()
-                        logger.debug(f"添加默认回复记录: cookie_id={cookie_id}, item_id={item_id}, chat_id={chat_id}")
-                    return True
-            except Exception as e:
-                logger.warning(f"添加默认回复记录失败: {e}")
-                return False
-        return self._run_async(_query)
-    
-    def save_item_default_reply(self, cookie_id: str, item_id: str, reply_content: str, 
-                                 enabled: bool = True, reply_once: bool = False,
-                                 reply_image: str = "") -> bool:
-        """保存商品默认回复设置
-        
-        Args:
-            cookie_id: 账号标识
-            item_id: 商品ID
-            reply_content: 回复内容
-            enabled: 是否启用
-            reply_once: 是否只回复一次
-            reply_image: 回复图片URL
-        """
-        async def _save(session_maker):
-            try:
-                async with session_maker() as session:
-                    # 查询是否已存在
-                    stmt = select(DefaultReply).where(
-                        and_(
-                            DefaultReply.account_id == cookie_id,
-                            DefaultReply.item_id == item_id
-                        )
-                    )
-                    result = await session.execute(stmt)
-                    existing = result.scalar_one_or_none()
-                    
-                    if existing:
-                        # 更新
-                        existing.reply_content = reply_content
-                        existing.reply_image = reply_image
-                        existing.enabled = enabled
-                        existing.reply_once = reply_once
-                    else:
-                        # 新增
-                        new_reply = DefaultReply(
-                            account_id=cookie_id,
-                            item_id=item_id,
-                            reply_content=reply_content,
-                            reply_image=reply_image,
-                            enabled=enabled,
-                            reply_once=reply_once
-                        )
-                        session.add(new_reply)
-                    
-                    await session.commit()
-                    logger.info(f"保存商品默认回复成功: cookie_id={cookie_id}, item_id={item_id}")
-                    return True
-            except Exception as e:
-                logger.error(f"保存商品默认回复失败: {e}")
-                return False
-        return self._run_async(_save)
-    
-    def delete_item_default_reply(self, cookie_id: str, item_id: str) -> bool:
-        """删除商品默认回复设置"""
-        async def _delete(session_maker):
-            try:
-                async with session_maker() as session:
-                    stmt = delete(DefaultReply).where(
-                        and_(
-                            DefaultReply.account_id == cookie_id,
-                            DefaultReply.item_id == item_id
-                        )
-                    )
-                    await session.execute(stmt)
-                    await session.commit()
-                    logger.info(f"删除商品默认回复成功: cookie_id={cookie_id}, item_id={item_id}")
-                    return True
-            except Exception as e:
-                logger.error(f"删除商品默认回复失败: {e}")
-                return False
-        return self._run_async(_delete)
-    
-    def get_item_replay(self, item_id: str) -> Optional[Dict[str, Any]]:
-        """获取商品回复信息（用于变量替换）"""
-        # 返回空字典，变量替换时会使用默认值
-        return {}
-    
-    def get_item_reply(self, cookie_id: str, item_id: str) -> Optional[Dict[str, Any]]:
-        """获取指定账号和商品的回复内容
-        
-        Args:
-            cookie_id: 账号标识符
-            item_id: 商品ID
-            
-        Returns:
-            包含回复内容的字典，如果不存在返回None
-        """
-        # 新框架中没有item_replay表，从关键词表中查找商品ID对应的回复
-        async def _query(session_maker):
-            async with session_maker() as session:
-                # 先获取账号的主键ID
-                account_stmt = select(XYAccount.id).where(XYAccount.account_id == cookie_id)
-                account_result = await session.execute(account_stmt)
-                account_pk = account_result.scalar_one_or_none()
-                
-                if not account_pk:
-                    return None
-                
-                # 查询关键词表中该商品的回复
-                stmt = select(XYKeywordRule).where(
-                    XYKeywordRule.account_pk == account_pk,
-                    XYKeywordRule.item_id == item_id
-                ).limit(1)
-                result = await session.execute(stmt)
-                keyword = result.scalars().first()
-                
-                if keyword and keyword.reply_content:
-                    return {
-                        'reply_content': keyword.reply_content,
-                        'created_at': keyword.created_at,
-                        'updated_at': keyword.updated_at
-                    }
-                return None
-        
-        try:
-            return self._run_async(_query)
-        except Exception as e:
-            logger.error(f"获取指定商品回复失败: {e}")
-            return None
+    # 说明：默认回复的读写已统一由 backend-web 的 DefaultReplyService 处理，
+    # websocket 端 auto_reply_service 直接用 ORM 查询，故此处不再保留兼容方法。
     
     # ==================== 通知相关 ====================
     

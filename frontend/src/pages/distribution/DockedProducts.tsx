@@ -9,10 +9,14 @@ import { Search, RefreshCw, PackageCheck, Pencil, Trash2, X, Filter, MessageCirc
 import { getDockRecords, updateDockRecord, deleteDockRecord, toggleSubDock, getPickupUrl } from '@/api/distribution'
 import type { DockRecord, DockRecordFilterParams } from '@/api/distribution'
 import { useUIStore } from '@/store/uiStore'
+import { useAuthStore } from '@/store/authStore'
 import { EditDockModal } from './EditDockModal'
+import { ConfirmModal } from '@/components/common/ConfirmModal'
 
 export function DockedProducts() {
   const { addToast } = useUIStore()
+  const { user } = useAuthStore()
+  const isAdmin = Boolean(user?.is_admin)
   const [loading, setLoading] = useState(true)
   const [records, setRecords] = useState<DockRecord[]>([])
   const [total, setTotal] = useState(0)
@@ -34,6 +38,8 @@ export function DockedProducts() {
   const [subDockVisibility, setSubDockVisibility] = useState('public')
   const [priceSubmitting, setPriceSubmitting] = useState(false)
   const [isEditMode, setIsEditMode] = useState(false)
+  const [deleteRecord, setDeleteRecord] = useState<DockRecord | null>(null)
+  const [deletingRecord, setDeletingRecord] = useState(false)
 
   // 提货地址弹窗状态
   const [pickupModalOpen, setPickupModalOpen] = useState(false)
@@ -156,7 +162,7 @@ export function DockedProducts() {
 
   // 删除对接记录
   const handleDelete = async (record: DockRecord) => {
-    if (!confirm(`确定要删除对接记录「${record.dock_name}」吗？`)) return
+    setDeletingRecord(true)
     try {
       const result = await deleteDockRecord(record.id)
       if (result.success) {
@@ -167,6 +173,8 @@ export function DockedProducts() {
       }
     } catch {
       addToast({ type: 'error', message: '删除失败' })
+    } finally {
+      setDeletingRecord(false)
     }
   }
 
@@ -382,6 +390,7 @@ export function DockedProducts() {
               <thead className="bg-slate-50 dark:bg-slate-700/50">
                 <tr>
                   <th className="whitespace-nowrap sticky top-0 bg-slate-50 dark:bg-slate-700/50 z-10">ID</th>
+                  {isAdmin && <th className="whitespace-nowrap sticky top-0 bg-slate-50 dark:bg-slate-700/50 z-10">所属用户</th>}
                   <th className="whitespace-nowrap sticky top-0 bg-slate-50 dark:bg-slate-700/50 z-10">对接名称</th>
                   <th className="whitespace-nowrap sticky top-0 bg-slate-50 dark:bg-slate-700/50 z-10">层级</th>
                   <th className="whitespace-nowrap sticky top-0 bg-slate-50 dark:bg-slate-700/50 z-10">卡券ID</th>
@@ -403,7 +412,7 @@ export function DockedProducts() {
               <tbody>
                 {records.length === 0 ? (
                   <tr>
-                    <td colSpan={17}>
+                    <td colSpan={isAdmin ? 18 : 17}>
                       <div className="empty-state py-12">
                         <PackageCheck className="empty-state-icon" />
                         <p className="text-slate-500 dark:text-slate-400">
@@ -416,6 +425,11 @@ export function DockedProducts() {
                   records.map(record => (
                     <tr key={record.id}>
                       <td className="whitespace-nowrap text-sm text-slate-500 dark:text-slate-400">{record.id}</td>
+                      {isAdmin && (
+                        <td className="whitespace-nowrap text-sm text-slate-600 dark:text-slate-300 max-w-[160px] truncate" title={record.owner_username || ''}>
+                          {record.owner_username || '-'}
+                        </td>
+                      )}
                       <td className="whitespace-nowrap font-medium text-slate-900 dark:text-white">
                         {record.dock_name}
                       </td>
@@ -555,7 +569,7 @@ export function DockedProducts() {
                             <Pencil className="w-4 h-4" />
                           </button>
                           <button
-                            onClick={() => handleDelete(record)}
+                            onClick={() => setDeleteRecord(record)}
                             className="p-1.5 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/20 text-red-500 dark:text-red-400 transition-colors"
                             title="删除"
                           >
@@ -765,6 +779,16 @@ export function DockedProducts() {
           </div>
         </div>
       )}
+      <ConfirmModal
+        isOpen={!!deleteRecord}
+        title="删除对接记录"
+        message={`确定要删除对接记录「${deleteRecord?.dock_name || ''}」吗？`}
+        confirmText="删除"
+        type="danger"
+        loading={deletingRecord}
+        onConfirm={() => deleteRecord && handleDelete(deleteRecord).finally(() => setDeleteRecord(null))}
+        onCancel={() => setDeleteRecord(null)}
+      />
     </div>
   )
 }

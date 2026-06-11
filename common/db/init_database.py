@@ -200,6 +200,20 @@ class DatabaseInitializer:
             "定时获取闲鱼订单数据",
         ),
         (
+            "fetch_pending_orders",
+            "获取待发货订单任务",
+            60,
+            True,
+            "定时获取待发货订单并同步收货人姓名/手机号/地址等信息",
+        ),
+        (
+            "fetch_items",
+            "获取闲鱼商品任务",
+            1200,
+            True,
+            "定时获取所有启用账号的闲鱼在售商品并入库（新增或更新）",
+        ),
+        (
             "login_renew",
             "登录续期任务",
             600,
@@ -233,6 +247,13 @@ class DatabaseInitializer:
             300,
             True,
             "定时自动求小红花",
+        ),
+        (
+            "db_backup",
+            "数据库备份任务",
+            3600,
+            True,
+            "定时备份数据库所有表结构与数据到文件",
         ),
     )
     
@@ -314,6 +335,7 @@ class DatabaseInitializer:
                 proxy_user VARCHAR(120) COMMENT '代理用户名',
                 proxy_pass VARCHAR(255) COMMENT '代理密码',
                 message_expire_time INT DEFAULT 3600 COMMENT '相同消息等待时间(秒)',
+                reply_delay_seconds INT DEFAULT 0 COMMENT '自动回复延迟时间(秒)，0表示立即回复',
                 disable_reason VARCHAR(255) COMMENT '禁用原因',
                 scheduled_redelivery TINYINT(1) NOT NULL DEFAULT 0 COMMENT '定时补发货开关',
                 scheduled_rate TINYINT(1) NOT NULL DEFAULT 0 COMMENT '定时补评价开关',
@@ -403,6 +425,7 @@ class DatabaseInitializer:
                 synced_at DATETIME COMMENT '同步时间',
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+                UNIQUE KEY uk_order_account_no (account_id, order_no),
                 INDEX idx_owner_id (owner_id),
                 INDEX idx_order_no (order_no),
                 INDEX idx_account_id (account_id),
@@ -454,8 +477,11 @@ class DatabaseInitializer:
                 account_id VARCHAR(80) NOT NULL COMMENT '账号标识',
                 item_id VARCHAR(64) DEFAULT NULL COMMENT '商品ID(空为账号默认回复)',
                 enabled TINYINT(1) DEFAULT 0 COMMENT '是否启用',
+                reply_type VARCHAR(16) DEFAULT 'text' COMMENT '回复类型：text-文本(可附带图片)，api-接口',
                 reply_content TEXT COMMENT '回复内容',
                 reply_image VARCHAR(512) COMMENT '回复图片URL',
+                api_url VARCHAR(1024) DEFAULT NULL COMMENT 'API地址(reply_type=api时POST此地址)',
+                api_timeout INT DEFAULT 80 COMMENT 'API请求超时时间(秒)',
                 reply_once TINYINT(1) DEFAULT 0 COMMENT '只回复一次',
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
@@ -509,6 +535,7 @@ class DatabaseInitializer:
                 event_description TEXT COMMENT '事件描述',
                 processing_result TEXT COMMENT '处理结果',
                 processing_status VARCHAR(32) DEFAULT 'processing' COMMENT '处理状态',
+                captcha_engine VARCHAR(32) DEFAULT NULL COMMENT '验证通过引擎：playwright-主引擎/drissionpage-兜底引擎',
                 error_message TEXT COMMENT '错误信息',
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
@@ -1139,6 +1166,26 @@ class DatabaseInitializer:
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='账号消息通知关闭执行日志表';
         """,
 
+        # 38.3 数据库备份日志表（记录每次数据库备份任务的结果与备份文件信息）
+        "xy_db_backup_log": """
+            CREATE TABLE IF NOT EXISTS `xy_db_backup_log` (
+                `id` BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+                `status` VARCHAR(20) NOT NULL COMMENT '状态：success/failed',
+                `file_name` VARCHAR(255) DEFAULT NULL COMMENT '备份文件名',
+                `file_path` VARCHAR(500) DEFAULT NULL COMMENT '备份文件绝对路径',
+                `file_size` BIGINT DEFAULT NULL COMMENT '备份文件大小(字节)',
+                `table_count` INT DEFAULT NULL COMMENT '备份的数据表数量',
+                `total_rows` BIGINT DEFAULT NULL COMMENT '备份的数据总行数',
+                `duration_ms` INT DEFAULT NULL COMMENT '备份耗时(毫秒)',
+                `error_message` VARCHAR(1000) DEFAULT NULL COMMENT '错误信息',
+                `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+                `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+                PRIMARY KEY (`id`),
+                INDEX `idx_status` (`status`),
+                INDEX `idx_created_at` (`created_at`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='数据库备份日志表';
+        """,
+
         "xy_auto_reply_message_logs": """
             CREATE TABLE IF NOT EXISTS xy_auto_reply_message_logs (
                 id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
@@ -1169,6 +1216,8 @@ class DatabaseInitializer:
                 reply_image_url VARCHAR(1000) DEFAULT NULL COMMENT '回复图片URL',
                 reply_segments JSON DEFAULT NULL COMMENT '拆分后的回复分段',
                 error_message TEXT COMMENT '错误信息',
+                send_status VARCHAR(20) NOT NULL DEFAULT 'unknown' COMMENT '发送状态：success-发送成功/failed-发送失败/unknown-未知(无响应)',
+                send_fail_reason TEXT COMMENT '发送失败原因（如被安全拦截的明文文案）',
                 raw_message_json JSON DEFAULT NULL COMMENT '原始消息JSON',
                 context_snapshot JSON DEFAULT NULL COMMENT '上下文快照',
                 send_result_json JSON DEFAULT NULL COMMENT '发送结果快照',
@@ -1335,10 +1384,31 @@ class DatabaseInitializer:
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='闲鱼黑名单表';
         """,
 
+        # 51. 在线聊天快捷短语表
+        "xy_chat_quick_phrases": """
+            CREATE TABLE IF NOT EXISTS xy_chat_quick_phrases (
+                id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
+                owner_id BIGINT NOT NULL COMMENT '归属用户（本系统用户ID）',
+                title VARCHAR(80) NOT NULL COMMENT '短语标题',
+                content TEXT NOT NULL COMMENT '短语内容（发送的文本）',
+                sort_order INT NOT NULL DEFAULT 0 COMMENT '排序值，越小越靠前',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+                INDEX ix_xy_chat_quick_phrases_owner_id (owner_id),
+                INDEX idx_chat_quick_phrase_owner_sort (owner_id, sort_order)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='在线聊天快捷短语';
+        """,
     }
     
     # 字段迁移定义：表名 -> [(字段名, 字段定义, 在哪个字段后面)]
     COLUMN_MIGRATIONS = {
+        "xy_auto_reply_message_logs": [
+            ("send_status", "VARCHAR(20) NOT NULL DEFAULT 'unknown' COMMENT '发送状态：success-发送成功/failed-发送失败/unknown-未知(无响应)'", "error_message"),
+            ("send_fail_reason", "TEXT COMMENT '发送失败原因（如被安全拦截的明文文案）'", "send_status"),
+        ],
+        "xy_risk_control_logs": [
+            ("captcha_engine", "VARCHAR(32) DEFAULT NULL COMMENT '验证通过引擎：playwright-主引擎/drissionpage-兜底引擎'", "processing_status"),
+        ],
         "xy_accounts": [
             ("proxy_type", "VARCHAR(20) DEFAULT 'none' COMMENT '代理类型'", "last_refresh_at"),
             ("proxy_host", "VARCHAR(255) COMMENT '代理主机'", "proxy_type"),
@@ -1346,6 +1416,7 @@ class DatabaseInitializer:
             ("proxy_user", "VARCHAR(120) COMMENT '代理用户名'", "proxy_port"),
             ("proxy_pass", "VARCHAR(255) COMMENT '代理密码'", "proxy_user"),
             ("message_expire_time", "INT DEFAULT 3600 COMMENT '相同消息等待时间(秒)'", "proxy_pass"),
+            ("reply_delay_seconds", "INT DEFAULT 0 COMMENT '自动回复延迟时间(秒)，0表示立即回复'", "message_expire_time"),
             ("disable_reason", "VARCHAR(255) COMMENT '禁用原因'", "message_expire_time"),
             ("scheduled_redelivery", "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '定时补发货开关'", "disable_reason"),
             ("scheduled_rate", "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '定时补评价开关'", "scheduled_redelivery"),
@@ -1403,6 +1474,9 @@ class DatabaseInitializer:
         "xy_default_replies": [
             ("item_id", "VARCHAR(64) DEFAULT NULL COMMENT '商品ID'", "account_id"),
             ("reply_image", "VARCHAR(512) COMMENT '回复图片URL'", "reply_content"),
+            ("reply_type", "VARCHAR(16) DEFAULT 'text' COMMENT '回复类型：text-文本(可附带图片)，api-接口'", "enabled"),
+            ("api_url", "VARCHAR(1024) DEFAULT NULL COMMENT 'API地址(reply_type=api时POST此地址)'", "reply_image"),
+            ("api_timeout", "INT DEFAULT 80 COMMENT 'API请求超时时间(秒)'", "api_url"),
         ],
         "xy_default_reply_records": [
             ("item_id", "VARCHAR(64) DEFAULT NULL COMMENT '商品ID'", "account_id"),
@@ -1883,6 +1957,44 @@ class DatabaseInitializer:
                     logger.info("✓ xy_catalog_items: 创建 idx_cat_owner_created 复合索引")
             except Exception as e:
                 logger.warning(f"✗ xy_catalog_items idx_cat_owner_created 创建失败: {e}")
+
+            # 为 xy_catalog_items 补建 (account_id, item_id) 唯一约束 —— 防止「定时获取闲鱼商品任务」
+            # 与「商品管理页手动触发同步」两个流程并发 upsert 时重复插入同一商品（兜底）。
+            # 注意：项目硬性规范禁止删除数据，存在历史重复数据时不自动清理，
+            # 仅打印警告并跳过创建，待人工合并后下次启动自检再补建。
+            try:
+                check = text("""
+                    SELECT COUNT(*) FROM information_schema.STATISTICS
+                    WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME = 'xy_catalog_items'
+                    AND INDEX_NAME = 'uk_cat_account_item'
+                """)
+                result = await conn.execute(check)
+                if result.scalar() == 0:
+                    # 先检测是否存在 (account_id, item_id) 重复数据
+                    dup_check = text("""
+                        SELECT COUNT(*) FROM (
+                            SELECT account_id, item_id
+                            FROM xy_catalog_items
+                            GROUP BY account_id, item_id
+                            HAVING COUNT(*) > 1
+                        ) AS dup
+                    """)
+                    dup_result = await conn.execute(dup_check)
+                    dup_groups = dup_result.scalar() or 0
+                    if dup_groups > 0:
+                        logger.warning(
+                            f"✗ xy_catalog_items 存在 {dup_groups} 组 (account_id, item_id) 重复数据，"
+                            f"为遵守禁止删除数据规范，暂不创建 uk_cat_account_item 唯一约束。"
+                            f"请人工合并重复商品后，重启服务自动补建（当前由 Redis 账号锁兜底防并发）"
+                        )
+                    else:
+                        await conn.execute(text(
+                            "ALTER TABLE xy_catalog_items ADD UNIQUE KEY uk_cat_account_item (account_id, item_id)"
+                        ))
+                        logger.info("✓ xy_catalog_items: 创建 uk_cat_account_item 唯一约束")
+            except Exception as e:
+                logger.warning(f"✗ xy_catalog_items uk_cat_account_item 创建失败: {e}")
 
             # 为 xy_card_item_relations 补建 (user_id, item_id) 复合索引
             try:
@@ -2521,6 +2633,44 @@ class DatabaseInitializer:
                     logger.info("✓ xy_risk_control_logs: 创建 idx_rcl_owner_created 复合索引")
             except Exception as e:
                 logger.warning(f"✗ xy_risk_control_logs idx_rcl_owner_created 创建失败: {e}")
+
+            # 为 xy_orders 补建 (account_id, order_no) 唯一约束 —— 防止「定时获取闲鱼订单」
+            # 与「获取待发货订单」两个任务并发 upsert 时重复插入同一订单（B方案兜底）。
+            # 注意：项目硬性规范禁止删除数据，存在历史重复数据时不自动清理，
+            # 仅打印警告并跳过创建，待人工合并后下次启动自检再补建。
+            try:
+                check = text("""
+                    SELECT COUNT(*) FROM information_schema.STATISTICS
+                    WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME = 'xy_orders'
+                    AND INDEX_NAME = 'uk_order_account_no'
+                """)
+                result = await conn.execute(check)
+                if result.scalar() == 0:
+                    # 先检测是否存在 (account_id, order_no) 重复数据
+                    dup_check = text("""
+                        SELECT COUNT(*) FROM (
+                            SELECT account_id, order_no
+                            FROM xy_orders
+                            GROUP BY account_id, order_no
+                            HAVING COUNT(*) > 1
+                        ) AS dup
+                    """)
+                    dup_result = await conn.execute(dup_check)
+                    dup_groups = dup_result.scalar() or 0
+                    if dup_groups > 0:
+                        logger.warning(
+                            f"✗ xy_orders 存在 {dup_groups} 组 (account_id, order_no) 重复数据，"
+                            f"为遵守禁止删除数据规范，暂不创建 uk_order_account_no 唯一约束。"
+                            f"请人工合并重复订单后，重启服务自动补建（当前由 Redis 账号锁兜底防并发）"
+                        )
+                    else:
+                        await conn.execute(text(
+                            "ALTER TABLE xy_orders ADD UNIQUE KEY uk_order_account_no (account_id, order_no)"
+                        ))
+                        logger.info("✓ xy_orders: 创建 uk_order_account_no 唯一约束")
+            except Exception as e:
+                logger.warning(f"✗ xy_orders uk_order_account_no 创建失败: {e}")
 
 
     async def create_default_admin(self):

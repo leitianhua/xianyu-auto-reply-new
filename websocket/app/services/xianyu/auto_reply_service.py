@@ -1,4 +1,4 @@
-﻿"""
+"""
 自动回复服务
 
 功能:
@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 import traceback
@@ -29,6 +30,8 @@ from common.models.xy_catalog_item import XYCatalogItem
 from common.models.default_reply import DefaultReply, DefaultReplyRecord
 from common.models.xy_order import XYOrder
 from common.db.session import async_session_maker
+from common.db.redis_client import distributed_lock
+from common.utils.default_reply_api import call_reply_api
 
 from app.services.xianyu.resource_manager import pause_manager
 from app.services.xianyu.auto_reply_log_service import AutoReplyLogService
@@ -240,9 +243,9 @@ class AutoReplyService:
             return None
         return "；".join(errors[:3])
     
-    async def _record_auto_reply_log(self, log_payload: Dict[str, Any]) -> None:
-        """写入自动回复日志"""
-        await self.auto_reply_log_service.record_message(log_payload)
+    async def _record_auto_reply_log(self, log_payload: Dict[str, Any]) -> int | None:
+        """写入自动回复日志，返回日志主键ID（供异步回写发送状态）"""
+        return await self.auto_reply_log_service.record_message(log_payload)
     
     # ==================== 消息去重功能(参照旧框架reply_scheduler.py) ====================
     
@@ -267,6 +270,25 @@ class AutoReplyService:
             self._message_expire_time = 3600
             self._message_expire_time_loaded = True
             return 3600
+    
+    async def _load_reply_delay(self) -> int:
+        """实时从数据库加载自动回复延迟时间配置(秒)，0表示立即回复
+        
+        每次发送前都重新查库，保证账号管理中修改延迟时间后实时生效，无需重启账号。
+        """
+        try:
+            async with async_session_maker() as session:
+                stmt = select(XYAccount.reply_delay_seconds).where(
+                    XYAccount.account_id == self.cookie_id
+                )
+                result = await session.execute(stmt)
+                delay = result.scalar_one_or_none()
+                if delay is not None and delay > 0:
+                    return delay
+                return 0
+        except Exception as e:
+            logger.warning(f"【{self.cookie_id}】加载自动回复延迟配置失败: {e}，使用默认值0秒")
+            return 0
     
     async def _check_chat_processed(self, chat_id: str, send_message: str) -> bool:
         """检查该会话的该消息是否在等待时间内已处理过(参照旧框架)
@@ -666,6 +688,12 @@ class AutoReplyService:
                     # 标记该消息已处理(在发送回复前标记，参照旧框架)
                     await self._mark_chat_processed(chat_id, send_message)
                     
+                    # 自动回复延迟：按账号配置在发送前等待指定秒数
+                    reply_delay = await self._load_reply_delay()
+                    if reply_delay > 0:
+                        logger.info(f"【{self.cookie_id}】自动回复延迟 {reply_delay} 秒后发送")
+                        await asyncio.sleep(reply_delay)
+                    
                     # 检查是否是图片发送指令
                     # 格式：__IMAGE_SEND__|类型标识|image_url
                     # 类型标识：KW:keyword（关键词）、DR:item_id（默认回复）、空（不需要更新）
@@ -757,9 +785,20 @@ class AutoReplyService:
                 if not failed_results:
                     log_payload["process_status"] = "success"
                     log_payload["decision_reason"] = "reply_sent"
+                    # 消息已发出 WebSocket，但是否被服务端接收需异步等待响应确认，
+                    # 先置为 unknown，由后台任务在拿到响应后回写 success/failed
+                    log_payload["send_status"] = "unknown"
+                    # 收集本次发出消息的 (future, mid)，供异步检测发送结果
+                    log_payload["_pending_send_waiters"] = [
+                        (result.get("send_future"), result.get("mid"))
+                        for result in send_results
+                        if result.get("send_future") is not None
+                    ]
                 else:
                     log_payload["process_status"] = "failed"
                     log_payload["decision_reason"] = "send_failed"
+                    # 发送层（WebSocket 发送）就失败，直接判定发送失败
+                    log_payload["send_status"] = "failed"
                     error_messages = [
                         str(result.get("error_message") or "").strip()
                         for result in failed_results
@@ -767,6 +806,7 @@ class AutoReplyService:
                     ]
                     if error_messages:
                         log_payload["error_message"] = "；".join(error_messages)
+                        log_payload["send_fail_reason"] = "；".join(error_messages)
             elif not should_skip and log_payload.get("process_status") == "processing":
                 log_payload["process_status"] = "skipped"
                 log_payload["decision_reason"] = "no_rule_matched"
@@ -797,9 +837,66 @@ class AutoReplyService:
             log_payload["error_message"] = str(e)
         finally:
             try:
-                await self._record_auto_reply_log(log_payload)
+                # 取出待检测的发送 (future, mid)（临时键，不写入数据库）
+                pending_send_waiters = log_payload.pop("_pending_send_waiters", None)
+                log_id = await self._record_auto_reply_log(log_payload)
+                # 若消息已发出且日志写入成功，起后台任务异步等待发送结果并回写状态
+                if log_id and pending_send_waiters:
+                    self._spawn_send_status_writeback(log_id, pending_send_waiters)
             finally:
                 self._reply_trace_var.reset(reply_trace_token)
+
+    def _spawn_send_status_writeback(self, log_id: int, waiters: list) -> None:
+        """起后台任务：异步等待发送结果并回写日志的发送状态
+
+        不阻塞自动回复主流程。优先用实例的任务追踪器创建任务，
+        不可用时回退到 asyncio.create_task。
+
+        Args:
+            log_id: 日志主键ID
+            waiters: 本次发出消息的 (send_future, mid) 列表
+        """
+        try:
+            coro = self._writeback_send_status(log_id, waiters)
+            tracker = getattr(self.xianyu_instance, "_create_tracked_task", None)
+            if callable(tracker):
+                tracker(coro)
+            else:
+                import asyncio
+                asyncio.create_task(coro)
+        except Exception as e:
+            logger.warning(f"【{self.cookie_id}】启动发送状态回写任务失败 log_id={log_id}: {e}")
+
+    async def _writeback_send_status(self, log_id: int, waiters: list) -> None:
+        """等待各发送响应，按结果回写日志发送状态
+
+        - 任一消息被服务端拦截（返回 reason）→ send_status=failed，记录失败原因
+        - 全部无拦截响应（含正常发送、超时）→ send_status=success
+
+        Args:
+            log_id: 日志主键ID
+            waiters: 本次发出消息的 (send_future, mid) 列表
+        """
+        try:
+            wait_fn = getattr(self.xianyu_instance, "wait_send_reject_reason", None)
+            if not callable(wait_fn):
+                return
+            reasons: List[str] = []
+            for send_future, mid in waiters:
+                reason = await wait_fn(send_future, mid)
+                if reason:
+                    reasons.append(reason)
+            if reasons:
+                await self.auto_reply_log_service.safe_update_send_status(
+                    log_id, "failed", "；".join(reasons)
+                )
+                logger.warning(
+                    f"【{self.cookie_id}】自动回复发送被拦截 log_id={log_id}: {'；'.join(reasons)}"
+                )
+            else:
+                await self.auto_reply_log_service.safe_update_send_status(log_id, "success", None)
+        except Exception as e:
+            logger.warning(f"【{self.cookie_id}】回写发送状态异常 log_id={log_id}: {e}")
 
     async def _send_text_with_separator(
         self,
@@ -878,8 +975,19 @@ class AutoReplyService:
                 logger.debug(f"【{self.cookie_id}】未配置消息通知，跳过通知发送")
                 return
             
+            # 获取账号备注
+            remark = ""
+            try:
+                account_details = db_manager.get_cookie_details(self.cookie_id)
+                if account_details:
+                    remark = account_details.get("remark") or ""
+            except Exception as e:
+                logger.warning(f"获取账号详情失败: {e}")
+
             # 构建通知内容
+            account_desc = f"{self.cookie_id}({remark})" if remark else self.cookie_id
             notification_content = f"【闲鱼消息】\n"
+            notification_content += f"闲鱼账号: {account_desc}\n"
             notification_content += f"发送者: {send_user_name}\n"
             notification_content += f"消息: {send_message}\n"
             if item_id:
@@ -1250,6 +1358,52 @@ class AutoReplyService:
         url_lower = url.lower()
         return any(domain in url_lower for domain in cdn_domains)
     
+    async def _do_api_default_reply(
+        self,
+        session: AsyncSession,
+        send_message: str,
+        api_url: str,
+        api_timeout,
+        settings: dict,
+        settings_item_id: Optional[str],
+        chat_id: str,
+        reply_trace: Optional[dict],
+    ) -> Optional[str]:
+        """调用外部 API 获取默认回复内容并处理结果。
+
+        由 get_default_reply 在持有会话级去重锁（或降级无锁）时调用：
+        - 调用失败/超时/无有效内容：返回 None，不回复，且不记录 reply_once（便于下次重试）；
+        - 调用成功：按需记录 reply_once，返回回复文本（下游按 ###### 分段发送）。
+        """
+        api_reply = await call_reply_api(
+            account_id=self.cookie_id,
+            message=send_message,
+            api_url=api_url,
+            timeout=api_timeout,
+        )
+
+        # 失败/无有效内容：不回复（不记录 reply_once，便于下次重试）
+        if not api_reply or not api_reply.strip():
+            logger.info(f"【{self.cookie_id}】默认回复API未返回有效内容,不进行回复")
+            if reply_trace is not None:
+                reply_trace["process_status"] = "skipped"
+                reply_trace["decision_reason"] = "no_rule_matched"
+                reply_trace.setdefault("context_snapshot", {})["default_reply_api_url"] = api_url
+            return None
+
+        # 调用成功后再记录 reply_once
+        if settings.get("reply_once", False) and chat_id:
+            await self._record_user_replied(session, self.cookie_id, chat_id, settings_item_id)
+            logger.info(f"【{self.cookie_id}】记录默认回复(API): chat_id={chat_id}, item_id={settings_item_id}")
+
+        logger.info(f"【{self.cookie_id}】使用API默认回复: {api_reply[:50]}")
+        if reply_trace is not None:
+            reply_trace["reply_mode"] = "text"
+            reply_trace["reply_text"] = api_reply
+            reply_trace["reply_segments"] = self._build_text_reply_segments(api_reply)
+            reply_trace.setdefault("context_snapshot", {})["default_reply_api_url"] = api_url
+        return api_reply
+
     async def get_default_reply(
         self,
         session: AsyncSession,
@@ -1303,8 +1457,104 @@ class AutoReplyService:
                         reply_trace["decision_reason"] = "default_reply_once"
                     return None
 
+            reply_type = settings.get("reply_type", "text") or "text"
             reply_content = settings.get("reply_content", "")
             reply_image = settings.get("reply_image", "")
+
+            # API 类型：调用外部接口获取回复内容，失败则不回复
+            if reply_type == "api":
+                api_url = settings.get("api_url", "")
+                api_timeout = settings.get("api_timeout", 80)
+                if not api_url or not api_url.strip():
+                    logger.info(f"【{self.cookie_id}】默认回复API地址为空,不进行回复")
+                    return "EMPTY_REPLY"
+
+                # 无会话标识时不加锁，避免把不同会话的消息全局串行化
+                if not chat_id:
+                    return await self._do_api_default_reply(
+                        session=session,
+                        send_message=send_message,
+                        api_url=api_url,
+                        api_timeout=api_timeout,
+                        settings=settings,
+                        settings_item_id=settings_item_id,
+                        chat_id=chat_id,
+                        reply_trace=reply_trace,
+                    )
+
+                # 会话级串行（阻塞等待而非丢弃）：外部接口最长可等待 api_timeout 秒，
+                # 期间买家在同一会话连发的多条消息若并发触发调用，会并发猛打外部接口，
+                # 且 reply_once 场景下可能重复回复。故对同一 chat_id 的 API 调用串行化——
+                # 后到的消息排队等前一条调用完成后再执行自己的调用，从而：
+                #   1) 不漏回复：每条消息都会被依次应答（不同问题各自得到回复）；
+                #   2) reply_once 正确：持锁后重新核对是否已回复，已回复才跳过；
+                #   3) 不并发猛打外部接口。
+                # Redis 不可用或等待超时时降级为无锁直接调用，保证可用性、绝不漏回复。
+                api_lock_name = f"default_reply_api:{self.cookie_id}:{chat_id}"
+                # 锁自动过期时间覆盖整个外部调用窗口，防止持锁者崩溃后死锁；
+                # 但排队等待上限收敛到较小值（最多 15 秒），避免上游 DB session 与消息
+                # 处理被长时间（最长 api_timeout 秒）挂起，拖垮连接池。等待超时即降级直接
+                # 调用——绝大多数并发只是毫秒级排队，极少触发降级。
+                lock_expire = int(api_timeout or 80) + 10
+                lock_wait_timeout = min(int(api_timeout or 80), 15)
+                try:
+                    async with distributed_lock(
+                        api_lock_name, expire=lock_expire, blocking=True, timeout=lock_wait_timeout
+                    ) as api_lock:
+                        if not api_lock.is_locked:
+                            # 等待超时仍未拿到锁：降级直接调用，避免漏回复
+                            logger.warning(
+                                f"【{self.cookie_id}】chat_id {chat_id} 等待API默认回复会话锁超时，"
+                                f"降级直接调用"
+                            )
+                            return await self._do_api_default_reply(
+                                session=session,
+                                send_message=send_message,
+                                api_url=api_url,
+                                api_timeout=api_timeout,
+                                settings=settings,
+                                settings_item_id=settings_item_id,
+                                chat_id=chat_id,
+                                reply_trace=reply_trace,
+                            )
+                        # 持锁后重新核对 reply_once：前一条同会话消息可能刚已回复并记录
+                        if settings.get("reply_once", False):
+                            if await self._check_user_replied(
+                                session, self.cookie_id, chat_id, settings_item_id
+                            ):
+                                logger.info(
+                                    f"【{self.cookie_id}】chat_id {chat_id} 已使用过默认回复,"
+                                    f"跳过(只回复一次)"
+                                )
+                                if reply_trace is not None:
+                                    reply_trace["process_status"] = "skipped"
+                                    reply_trace["decision_reason"] = "default_reply_once"
+                                return None
+                        return await self._do_api_default_reply(
+                            session=session,
+                            send_message=send_message,
+                            api_url=api_url,
+                            api_timeout=api_timeout,
+                            settings=settings,
+                            settings_item_id=settings_item_id,
+                            chat_id=chat_id,
+                            reply_trace=reply_trace,
+                        )
+                except Exception as lock_exc:
+                    # Redis 异常等情况降级为无锁直接调用，不阻断正常回复
+                    logger.warning(
+                        f"【{self.cookie_id}】API默认回复获取会话锁异常，降级无锁执行: {lock_exc}"
+                    )
+                    return await self._do_api_default_reply(
+                        session=session,
+                        send_message=send_message,
+                        api_url=api_url,
+                        api_timeout=api_timeout,
+                        settings=settings,
+                        settings_item_id=settings_item_id,
+                        chat_id=chat_id,
+                        reply_trace=reply_trace,
+                    )
 
             if reply_image and reply_image.strip():
                 logger.info(f"【{self.cookie_id}】默认回复包含图片: {reply_image}")
@@ -1403,8 +1653,11 @@ class AutoReplyService:
                 logger.info(f"【{account_id}】使用商品级别默认回复，item_id={item_id}")
                 return {
                     "enabled": reply.enabled,
+                    "reply_type": getattr(reply, "reply_type", "text") or "text",
                     "reply_content": reply.reply_content or "",
                     "reply_image": reply.reply_image or "",
+                    "api_url": getattr(reply, "api_url", "") or "",
+                    "api_timeout": getattr(reply, "api_timeout", 80) or 80,
                     "reply_once": reply.reply_once,
                     "item_id": item_id,
                 }
@@ -1421,8 +1674,11 @@ class AutoReplyService:
         logger.info(f"【{account_id}】使用账号级别默认回复")
         return {
             "enabled": reply.enabled,
+            "reply_type": getattr(reply, "reply_type", "text") or "text",
             "reply_content": reply.reply_content or "",
             "reply_image": reply.reply_image or "",
+            "api_url": getattr(reply, "api_url", "") or "",
+            "api_timeout": getattr(reply, "api_timeout", 80) or 80,
             "reply_once": reply.reply_once,
             "item_id": None,
         }

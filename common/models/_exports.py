@@ -31,6 +31,7 @@ from common.models.scheduled_login_renew_log import ScheduledLoginRenewLog
 from common.models.scheduled_cookies_refresh_log import ScheduledCookiesRefreshLog
 from common.models.scheduled_api_cookie_renew_log import ScheduledApiCookieRenewLog
 from common.models.scheduled_close_notice_log import ScheduledCloseNoticeLog
+from common.models.db_backup_log import DbBackupLog
 from common.models.announcement import Announcement
 from common.models.confirm_receipt_message import ConfirmReceiptMessage
 from common.models.scheduled_task import ScheduledTask
@@ -53,6 +54,7 @@ from common.models.fy_delete_rule import FYDeleteRule
 from common.models.xy_delivery_block_rule import XYDeliveryBlockRule
 from common.models.xy_personal_blacklist import XYPersonalBlacklist
 from common.models.xy_platform_blacklist import XYPlatformBlacklist
+from common.models.chat_quick_phrase import ChatQuickPhrase
 
 __all__ = [
     "User",
@@ -88,6 +90,7 @@ __all__ = [
     "ScheduledCookiesRefreshLog",
     "ScheduledApiCookieRenewLog",
     "ScheduledCloseNoticeLog",
+    "DbBackupLog",
     "Announcement",
     "ConfirmReceiptMessage",
     "ScheduledTask",
@@ -111,4 +114,5 @@ __all__ = [
     "XYDeliveryBlockRule",
     "XYPersonalBlacklist",
     "XYPlatformBlacklist",
+    "ChatQuickPhrase",
 ]
