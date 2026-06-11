@@ -159,7 +159,7 @@ services:
       - "${WEBSOCKET_PORT:-8090}:8090"
     networks:
       - 1panel-network
-#    depends_on:
+    depends_on:
 #      mysql:
 #        condition: service_healthy
 #      redis:
@@ -216,7 +216,7 @@ services:
       - "${SCHEDULER_PORT:-8091}:8091"
     networks:
       - 1panel-network
-#    depends_on:
+    depends_on:
 #      mysql:
 #        condition: service_healthy
 #      redis:
