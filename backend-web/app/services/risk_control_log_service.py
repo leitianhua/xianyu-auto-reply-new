@@ -13,13 +13,14 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
+from sqlalchemy import select, func, case, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from common.models.risk_control_log import XYRiskControlLog
 from common.utils.pagination import execute_paginated_with_filters
 
 
-from common.utils.time_utils import safe_isoformat
+from common.utils.time_utils import safe_isoformat, get_beijing_now_naive
 class RiskControlLogService:
     """Read-only access to risk control logs."""
 
@@ -34,6 +35,7 @@ class RiskControlLogService:
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
         processing_status: Optional[str] = None,
+        call_type: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
     ) -> tuple[list[dict], int]:
@@ -46,6 +48,7 @@ class RiskControlLogService:
             start_date: 开始日期（格式：YYYY-MM-DD）
             end_date: 结束日期（格式：YYYY-MM-DD）
             processing_status: 处理状态筛选（success/failed/processing）
+            call_type: 调用类型筛选（local-本机/remote-远程）
             limit: 每页数量
             offset: 偏移量
             
@@ -82,6 +85,10 @@ class RiskControlLogService:
         if processing_status:
             filters.append(XYRiskControlLog.processing_status == processing_status)
 
+        # 调用类型筛选（local-本机/remote-远程）
+        if call_type:
+            filters.append(XYRiskControlLog.call_type == call_type)
+
         logs, total = await execute_paginated_with_filters(
             self.session,
             XYRiskControlLog,
@@ -101,6 +108,8 @@ class RiskControlLogService:
                 "processing_result": log.processing_result,
                 "processing_status": log.processing_status,
                 "captcha_engine": log.captcha_engine,
+                "call_type": log.call_type,
+                "call_user": log.call_user,
                 "error_message": log.error_message,
                 "created_at": safe_isoformat(log.created_at),
                 "updated_at": safe_isoformat(log.updated_at),
@@ -108,3 +117,77 @@ class RiskControlLogService:
             for log in logs
         ]
         return items, total
+
+    async def get_today_success_rate(self, *, owner_id: int | None = None) -> dict:
+        """
+        统计当日（北京时间）风控处理成功率（含总体 / 本机 / 远程三个维度）
+
+        - 总成功率   = 当日成功记录数 / 当日总记录数
+        - 本机成功率 = 当日本机成功记录数 / 当日本机总记录数
+        - 远程成功率 = 当日远程成功记录数 / 当日远程总记录数
+
+        说明：
+        - 远程口径为 call_type == 'remote'；其余（含 'local' 与 NULL）一律计入本机，
+          保证 本机数 + 远程数 == 总数，三个维度各自使用自己的分母，避免分母用错。
+        - 普通用户仅统计自己的账号数据，管理员统计全部数据（由 owner_id 控制）。
+
+        Args:
+            owner_id: 所有者ID筛选，None 表示不限制（管理员）
+
+        Returns:
+            包含 date 及 total/success/rate、local_*、remote_* 的字典
+        """
+        now = get_beijing_now_naive()
+        start_dt = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        end_dt = now.replace(hour=23, minute=59, second=59, microsecond=999999)
+
+        # 当日范围过滤条件
+        base_filters = [
+            XYRiskControlLog.created_at >= start_dt,
+            XYRiskControlLog.created_at <= end_dt,
+        ]
+        if owner_id is not None:
+            base_filters.append(XYRiskControlLog.owner_id == owner_id)
+
+        is_success = XYRiskControlLog.processing_status == "success"
+        is_remote = XYRiskControlLog.call_type == "remote"
+
+        # 一次查询用条件聚合得到：总数、成功数、远程总数、远程成功数
+        stmt = (
+            select(
+                func.count().label("total"),
+                func.coalesce(func.sum(case((is_success, 1), else_=0)), 0).label("success"),
+                func.coalesce(func.sum(case((is_remote, 1), else_=0)), 0).label("remote_total"),
+                func.coalesce(
+                    func.sum(case((and_(is_remote, is_success), 1), else_=0)), 0
+                ).label("remote_success"),
+            )
+            .select_from(XYRiskControlLog)
+            .where(*base_filters)
+        )
+        row = (await self.session.execute(stmt)).one()
+
+        total = int(row.total or 0)
+        success = int(row.success or 0)
+        remote_total = int(row.remote_total or 0)
+        remote_success = int(row.remote_success or 0)
+
+        # 本机 = 总数 - 远程，保证两类相加等于总数（NULL/local 都归本机）
+        local_total = total - remote_total
+        local_success = success - remote_success
+
+        def _rate(s: int, t: int) -> float:
+            return round(s / t * 100, 2) if t > 0 else 0.0
+
+        return {
+            "date": start_dt.strftime("%Y-%m-%d"),
+            "total": total,
+            "success": success,
+            "rate": _rate(success, total),
+            "local_total": local_total,
+            "local_success": local_success,
+            "local_rate": _rate(local_success, local_total),
+            "remote_total": remote_total,
+            "remote_success": remote_success,
+            "remote_rate": _rate(remote_success, remote_total),
+        }

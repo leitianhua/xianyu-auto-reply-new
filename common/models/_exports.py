@@ -43,6 +43,13 @@ from common.models.settlement_record import SettlementRecord
 from common.models.product_material import ProductMaterial
 from common.models.publish_log import PublishLog
 from common.models.publish_address import PublishAddress
+from common.models.user_publish_address import UserPublishAddress
+from common.models.listing_monitor_category import ListingMonitorCategory
+from common.models.listing_monitor_task import ListingMonitorTask
+from common.models.listing_monitor_item import ListingMonitorItem
+from common.models.listing_monitor_log import ListingMonitorLog
+from common.models.collect_fallback_account import CollectFallbackAccount
+from common.models.order_fallback_account import OrderFallbackAccount
 from common.models.shared_scan_session import SharedScanSession
 from common.models.shared_scan_worker import SharedScanWorker
 from common.models.auto_reply_message_log import XYAutoReplyMessageLog
@@ -102,6 +109,13 @@ __all__ = [
     "ProductMaterial",
     "PublishLog",
     "PublishAddress",
+    "UserPublishAddress",
+    "ListingMonitorCategory",
+    "ListingMonitorTask",
+    "ListingMonitorItem",
+    "ListingMonitorLog",
+    "CollectFallbackAccount",
+    "OrderFallbackAccount",
     "SharedScanSession",
     "SharedScanWorker",
     "XYAutoReplyMessageLog",

@@ -25,6 +25,7 @@ from loguru import logger
 
 from app.core.config import get_settings
 from common.utils.logging_utils import setup_logging
+from common.utils.network_utils import resolve_listen_host
 
 faulthandler.enable()
 
@@ -101,6 +102,11 @@ async def lifespan(app: FastAPI):
     from app.core.http_client import close_http_client
     await close_http_client()
     logger.info("HTTP客户端已关闭")
+
+    # 关闭复用的 goofish API 连接池
+    from common.services.order_service import close_goofish_connector
+    await close_goofish_connector()
+    logger.info("goofish API 连接池已关闭")
 
 
 # 创建FastAPI应用
@@ -194,10 +200,13 @@ async def health_check():
 def run_server():
     """启动HTTP服务（供 main.py 的 __main__ 块调用）"""
     import uvicorn
-    
+
+    # 解析监听地址：默认 :: 双栈，Windows 或 IPv6 不可用时自动回退到 0.0.0.0
+    listen_host = resolve_listen_host(settings.host, settings.service_port)
+
     uvicorn.run(
         "main:app",
-        host="0.0.0.0",
+        host=listen_host,
         port=settings.service_port,
         reload=False,
         log_level=settings.log_level.lower(),

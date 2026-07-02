@@ -3,6 +3,7 @@
 # 前端编译后为混淆压缩的JS，天然不含可读源码
 
 # ====== 第一阶段：构建 ======
+# 基础镜像走 docker.io 官方名（由 buildx 的 buildkitd 镜像加速配置拉取，见流水线 BUILDKIT 配置）
 FROM node:18-alpine AS builder
 
 # 配置国内镜像源
@@ -23,6 +24,7 @@ COPY frontend/ .
 RUN npm run build
 
 # ====== 第二阶段：运行 ======
+# 基础镜像走 docker.io 官方名（由 buildx 的 buildkitd 镜像加速配置拉取，见流水线 BUILDKIT 配置）
 FROM nginx:alpine
 
 # 配置国内镜像源

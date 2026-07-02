@@ -105,12 +105,14 @@ const SEND_STATUS_LABELS: Record<string, string> = {
   success: '发送成功',
   failed: '发送失败',
   unknown: '待确认',
+  timeout: '超时',
 }
 
 const SEND_STATUS_CLASSES: Record<string, string> = {
   success: 'text-green-600 dark:text-green-400',
   failed: 'text-red-600 dark:text-red-400',
   unknown: 'text-slate-500 dark:text-slate-400',
+  timeout: 'text-amber-600 dark:text-amber-400',
 }
 
 function buildSendStatusLabel(value?: string | null) {
@@ -313,6 +315,7 @@ export function AutoReplyLogs() {
                 <option value="success">发送成功</option>
                 <option value="failed">发送失败</option>
                 <option value="unknown">待确认</option>
+                <option value="timeout">超时</option>
               </select>
             </div>
             <button onClick={handleSearch} className="btn-ios-primary">
@@ -344,6 +347,7 @@ export function AutoReplyLogs() {
                   <th>账号</th>
                   <th>发送方</th>
                   <th>商品</th>
+                  <th>订单号</th>
                   <th>策略</th>
                   <th>回复类型</th>
                   <th>命中关键词</th>
@@ -363,7 +367,7 @@ export function AutoReplyLogs() {
               <tbody>
                 {logs.length === 0 ? (
                   <tr>
-                    <td colSpan={18}>
+                    <td colSpan={19}>
                       <div className="empty-state py-8">
                         <p className="text-slate-500 dark:text-slate-400">暂无消息日志</p>
                       </div>
@@ -388,6 +392,7 @@ export function AutoReplyLogs() {
                         <div className="font-medium">{renderText(log.item_title)}</div>
                         <div className="text-xs text-slate-500 dark:text-slate-400 break-all">{renderText(log.item_id)}</div>
                       </td>
+                      <td className="align-top min-w-[180px] break-all">{renderText(log.order_no)}</td>
                       <td className="align-top whitespace-nowrap">{buildStrategyLabel(log)}</td>
                       <td className="align-top whitespace-nowrap">{buildReplyModeLabel(log.reply_mode)}</td>
                       <td className="align-top min-w-[160px] break-all">{renderText(log.matched_keyword)}</td>

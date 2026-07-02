@@ -14,6 +14,7 @@ import type { DisclaimerSettings } from '@/types'
 // 登录/注册/激活码页面保持同步导入（首屏必需）
 import { Login } from '@/pages/auth/Login'
 import { Register } from '@/pages/auth/Register'
+import { ForgotPassword } from '@/pages/auth/ForgotPassword'
 import { GetActivation } from '@/pages/auth/GetActivation'
 import { RenewActivation } from '@/pages/auth/RenewActivation'
 import { GetLocalVersion } from '@/pages/auth/GetLocalVersion'
@@ -34,6 +35,7 @@ const Settings = React.lazy(() => import('@/pages/settings/Settings').then(m => 
 const MessageFilters = React.lazy(() => import('@/pages/messageFilters/MessageFilters').then(m => ({ default: m.MessageFilters })))
 const Feedback = React.lazy(() => import('@/pages/feedback/Feedback'))
 const Announcements = React.lazy(() => import('@/pages/announcements/Announcements').then(m => ({ default: m.Announcements })))
+const PopupAnnouncements = React.lazy(() => import('@/pages/announcements/PopupAnnouncements').then(m => ({ default: m.PopupAnnouncements })))
 const AdManage = React.lazy(() => import('@/pages/advertisements/AdManage'))
 const AdApply = React.lazy(() => import('@/pages/advertisements/AdApply'))
 const Tutorial = React.lazy(() => import('@/pages/tutorial/Tutorial').then(m => ({ default: m.Tutorial })))
@@ -50,6 +52,7 @@ const FundFlows = React.lazy(() => import('@/pages/distribution/FundFlows').then
 const SubDealerManagement = React.lazy(() => import('@/pages/distribution/SubDealerManagement').then(m => ({ default: m.SubDealerManagement })))
 const SourceManagement = React.lazy(() => import('@/pages/distribution/SourceManagement').then(m => ({ default: m.SourceManagement })))
 const AgentOrders = React.lazy(() => import('@/pages/distribution/AgentOrders').then(m => ({ default: m.AgentOrders })))
+const CardPickup = React.lazy(() => import('@/pages/distribution/CardPickup').then(m => ({ default: m.CardPickup })))
 
 // 共享多人扫码登录
 const SharedScanManager = React.lazy(() => import('@/pages/shared-scan/SharedScanManager').then(m => ({ default: m.SharedScanManager })))
@@ -61,6 +64,13 @@ const ProductPublish = React.lazy(() => import('@/pages/product-publish/ProductP
 const BatchPublish = React.lazy(() => import('@/pages/product-publish/BatchPublish').then(m => ({ default: m.BatchPublish })))
 const PublishAddresses = React.lazy(() => import('@/pages/product-publish/PublishAddresses').then(m => ({ default: m.PublishAddresses })))
 const PublishLogs = React.lazy(() => import('@/pages/product-publish/PublishLogs').then(m => ({ default: m.PublishLogs })))
+const ListingMonitor = React.lazy(() => import('@/pages/product-monitor/ListingMonitor').then(m => ({ default: m.ListingMonitor })))
+const MonitorOverview = React.lazy(() => import('@/pages/product-monitor/MonitorOverview').then(m => ({ default: m.MonitorOverview })))
+const MonitorCategory = React.lazy(() => import('@/pages/product-monitor/MonitorCategory').then(m => ({ default: m.MonitorCategory })))
+const MonitorLogs = React.lazy(() => import('@/pages/product-monitor/MonitorLogs').then(m => ({ default: m.MonitorLogs })))
+const MonitorItems = React.lazy(() => import('@/pages/product-monitor/MonitorItems').then(m => ({ default: m.MonitorItems })))
+const OrderFallbackAccount = React.lazy(() => import('@/pages/product-monitor/OrderFallbackAccount').then(m => ({ default: m.OrderFallbackAccount })))
+const CollectFallbackAccount = React.lazy(() => import('@/pages/product-monitor/CollectFallbackAccount').then(m => ({ default: m.CollectFallbackAccount })))
 
 // 管理员页面懒加载
 const Users = React.lazy(() => import('@/pages/admin/Users').then(m => ({ default: m.Users })))
@@ -303,6 +313,7 @@ function App() {
           {/* Public routes */}
           <Route path="/login" element={<Login />} />
           <Route path="/register" element={<Register />} />
+          <Route path="/forgot-password" element={<ForgotPassword />} />
           <Route path="/get-activation" element={<GetActivation />} />
           <Route path="/renew-activation" element={<RenewActivation />} />
           <Route path="/get-local-version" element={<GetLocalVersion />} />
@@ -342,6 +353,7 @@ function App() {
             <Route path="goofish-scheduled-crawler" element={<GoofishScheduledCrawler />} />
             <Route path="cards" element={<Cards />} />
             <Route path="distribution/supply" element={<SupplyManagement />} />
+            <Route path="distribution/card-pickup" element={<CardPickup />} />
             <Route path="distribution/docked" element={<DockedProducts />} />
             <Route path="distribution/dealers" element={<DealerManagement />} />
             <Route path="distribution/sub-dealers" element={<SubDealerManagement />} />
@@ -354,6 +366,14 @@ function App() {
             <Route path="product-publish/batch" element={<BatchPublish />} />
             <Route path="product-publish/addresses" element={<PublishAddresses />} />
             <Route path="product-publish/logs" element={<PublishLogs />} />
+            {/* 商品监控 */}
+            <Route path="product-monitor/overview" element={<MonitorOverview />} />
+            <Route path="product-monitor/categories" element={<MonitorCategory />} />
+            <Route path="product-monitor/listing" element={<ListingMonitor />} />
+            <Route path="product-monitor/logs" element={<MonitorLogs />} />
+            <Route path="product-monitor/items" element={<MonitorItems />} />
+            <Route path="product-monitor/order-fallback-accounts" element={<OrderFallbackAccount />} />
+            <Route path="product-monitor/collect-fallback-accounts" element={<CollectFallbackAccount />} />
             <Route path="personal-settings" element={<PersonalSettings />} />
             <Route path="blacklist" element={<Blacklist />} />
             <Route path="settings" element={<Settings />} />
@@ -390,6 +410,7 @@ function App() {
             <Route path="admin/scheduled-tasks" element={<ScheduledTasks />} />
             <Route path="admin/announcements" element={<Announcements />} />
             <Route path="admin/ad-manage" element={<AdManage />} />
+            <Route path="admin/popup-announcements" element={<PopupAnnouncements />} />
           </Route>
 
           {/* Catch all */}

@@ -234,6 +234,7 @@ async def list_cookie_details_paginated(
     auto_polish: bool | None = Query(default=None, description="商品擦亮筛选"),
     auto_confirm: bool | None = Query(default=None, description="自动确认收货筛选"),
     has_password: bool | None = Query(default=None, description="是否配置密码筛选"),
+    online: bool | None = Query(default=None, description="在线状态筛选：true=在线/false=离线"),
     disable_reason: str | None = Query(default=None, max_length=255, description="禁用原因模糊搜索关键词"),
     account_id: str | None = Query(default=None, max_length=255, description="账号ID模糊搜索关键词"),
     current_user: User = Depends(deps.get_current_active_user),
@@ -256,6 +257,15 @@ async def list_cookie_details_paginated(
     - account_id: 账号ID关键词（LIKE 模糊搜索）
     """
     owner_id, _ = resolve_owner_scope(current_user)
+
+    # 在线状态：口径与仪表盘“在线账号”一致（websocket 真实连接的账号集合）。
+    # 同时用于：①在线/离线筛选条件；②列表每行的 online 字段展示。失败时按空集合处理。
+    online_ids: frozenset[str] = frozenset()
+    try:
+        online_ids = await DashboardStatsService(session).get_online_account_ids()
+    except Exception:
+        online_ids = frozenset()
+
     accounts, total = await account_service.list_accounts_paginated(
         owner_id=owner_id,
         page=page,
@@ -269,6 +279,8 @@ async def list_cookie_details_paginated(
         has_password=has_password,
         disable_reason=disable_reason,
         account_id=account_id,
+        online=online,
+        online_account_ids=list(online_ids),
     )
     
     # 获取所有账号的消息过滤规则数量
@@ -277,6 +289,14 @@ async def list_cookie_details_paginated(
     filter_counts = {}
     keyword_counts = {}
     today_reply_counts = {}
+    # 批量查询账号所属用户名（管理员查看全量时需展示账号属于哪个用户）
+    owner_username_map: dict[int, str] = {}
+    owner_ids = list({acc.owner_id for acc in accounts if acc.owner_id is not None})
+    if owner_ids:
+        user_result = await session.execute(
+            select(User.id, User.username).where(User.id.in_(owner_ids))
+        )
+        owner_username_map = {row.id: row.username for row in user_result.all()}
     if account_ids:
         placeholders = ", ".join([f":acc_{i}" for i in range(len(account_ids))])
         params = {f"acc_{i}": acc_id for i, acc_id in enumerate(account_ids)}
@@ -315,6 +335,7 @@ async def list_cookie_details_paginated(
             "id": account.account_id,
             "value": account.cookie or "",
             "enabled": _status_to_enabled(account.status),
+            "online": account.account_id in online_ids,
             "auto_confirm": bool(account.auto_confirm),
             "scheduled_redelivery": bool(account.scheduled_redelivery),
             "scheduled_rate": bool(account.scheduled_rate),
@@ -342,6 +363,8 @@ async def list_cookie_details_paginated(
             "today_reply_count": today_reply_counts.get(account.account_id, 0),
             "keyword_count": keyword_counts.get(account.id, 0),
             "ai_enabled": read_ai_enabled(ai_settings),
+            "owner_id": account.owner_id,
+            "owner_username": owner_username_map.get(account.owner_id, ""),
             "created_at": safe_isoformat(account.created_at),
             "updated_at": safe_isoformat(account.updated_at),
         })

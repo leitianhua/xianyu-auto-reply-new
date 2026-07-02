@@ -1,6 +1,7 @@
 # Backend-Web 服务 Dockerfile
 # 单阶段构建，直接使用Python源码
 
+# 基础镜像走 docker.io 官方名（由 buildx 的 buildkitd 镜像加速配置拉取，见流水线 BUILDKIT 配置）
 FROM python:3.11-slim
 
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
@@ -13,6 +14,7 @@ RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y curl ca-certificates gcc \
+    fonts-dejavu-core fonts-liberation \
     && update-ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 

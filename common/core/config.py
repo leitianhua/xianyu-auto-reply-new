@@ -73,7 +73,11 @@ class BaseConfig(BaseSettings):
     jwt_algorithm: str = Field(default="HS256")
     access_token_expire_minutes: int = Field(default=30)
     refresh_token_expire_minutes: int = Field(default=60 * 24 * 7)
-    
+
+    # 服务监听地址：`::` 同时监听 IPv4 和 IPv6（dual-stack），
+    # 适用于 Linux/macOS；如需仅监听 IPv4 可设为 0.0.0.0
+    host: str = Field(default="::")
+
     # 服务地址配置
     websocket_service_url: str = Field(default="http://127.0.0.1:8001")
 
@@ -81,23 +85,39 @@ class BaseConfig(BaseSettings):
     # 通过环境变量 BACKUP_DIR 配置，禁止写死 localhost / 绝对路径
     backup_dir: str = Field(default="backups", alias="BACKUP_DIR")
 
+    # IM Token 缓存（xy_token_cache 表）的随机过期时间区间（小时）。
+    # 实际 TTL 在区间内随机取值，避免大量账号 Token 同时过期造成并发刷新。
+    # 未配置时默认 4~7 小时；配置非法（<=0 或 min>max）时回退默认。
+    token_cache_ttl_min_hours: float = Field(default=4.0, alias="TOKEN_CACHE_TTL_MIN_HOURS")
+    token_cache_ttl_max_hours: float = Field(default=7.0, alias="TOKEN_CACHE_TTL_MAX_HOURS")
+
+    # 滑块验证 - 真实鼠标模式开关
+    # 开启后：用 pyautogui 驱动“物理光标”回放真人轨迹完成滑块（成功率高，但会占用桌面鼠标，
+    #         仅适用于有图形桌面的 Windows 环境；运行期间该桌面鼠标被接管约 2~3 秒）。
+    # 关闭（默认）：走原有 Playwright(CDP) 轨迹 + DrissionPage 兜底逻辑。
+    # Docker / 无头 Linux 环境必须保持关闭（无桌面无法驱动物理鼠标），故默认 False。
+    captcha_real_mouse_enabled: bool = Field(default=False, alias="CAPTCHA_REAL_MOUSE")
+
     @property
     def database_url(self) -> str:
         """同步数据库连接URL"""
         password = quote_plus(self.mysql_password)
-        return f"{self.sync_driver}://{self.mysql_user}:{password}@{self.mysql_host}:{self.mysql_port}/{self.mysql_database}"
+        host = f"[{self.mysql_host}]" if ":" in self.mysql_host else self.mysql_host
+        return f"{self.sync_driver}://{self.mysql_user}:{password}@{host}:{self.mysql_port}/{self.mysql_database}"
 
     @property
     def async_database_url(self) -> str:
         """异步数据库连接URL"""
         password = quote_plus(self.mysql_password)
-        return f"{self.async_driver}://{self.mysql_user}:{password}@{self.mysql_host}:{self.mysql_port}/{self.mysql_database}"
-    
+        host = f"[{self.mysql_host}]" if ":" in self.mysql_host else self.mysql_host
+        return f"{self.async_driver}://{self.mysql_user}:{password}@{host}:{self.mysql_port}/{self.mysql_database}"
+
     @property
     def redis_url(self) -> str:
         """Redis连接URL"""
         password = quote_plus(self.redis_password)
-        return f"redis://:{password}@{self.redis_host}:{self.redis_port}/{self.redis_db}"
+        host = f"[{self.redis_host}]" if ":" in self.redis_host else self.redis_host
+        return f"redis://:{password}@{host}:{self.redis_port}/{self.redis_db}"
 
 
 @lru_cache

@@ -11,6 +11,7 @@ import { useUIStore } from '@/store/uiStore'
 import { cn } from '@/utils/cn'
 import { ButtonLoading } from '@/components/common/Loading'
 import { GeetestCaptcha, type GeetestResult } from '@/components/common/GeetestCaptcha'
+import { POPUP_ANNOUNCEMENT_SHOWN_KEY } from '@/components/common/PopupAnnouncementModal'
 
 type LoginType = 'username' | 'email-password' | 'email-code'
 
@@ -250,6 +251,8 @@ export function Login() {
       const result = await login(loginData)
 
       if (result.success && result.token && result.refresh_token) {
+        // 清除弹窗公告会话标记，确保本次登录后重新弹窗展示一次
+        sessionStorage.removeItem(POPUP_ANNOUNCEMENT_SHOWN_KEY)
         setAuth(result.token, result.refresh_token, {
           user_id: result.user_id!,
           username: result.username!,
@@ -550,15 +553,17 @@ export function Login() {
               </button>
             </form>
 
-            {/* Register link */}
-            {registrationEnabled && (
-              <p className="text-center mt-6 text-slate-500 dark:text-slate-400 text-sm">
-                还没有账号？{' '}
+            {/* Forgot password + Register links */}
+            <div className="flex items-center justify-between mt-6 text-sm">
+              <Link to="/forgot-password" className="text-slate-500 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-400">
+                忘记密码?
+              </Link>
+              {registrationEnabled && (
                 <Link to="/register" className="text-blue-600 dark:text-blue-400 font-medium hover:text-blue-700 dark:hover:text-blue-300">
                   立即注册
                 </Link>
-              </p>
-            )}
+              )}
+            </div>
 
             {/* Default credentials */}
             {showDefaultLogin && (

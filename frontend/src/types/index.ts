@@ -12,6 +12,8 @@ export interface User {
   role?: UserRole
   status?: UserStatus
   account_limit?: number | null
+  balance?: string | null
+  expire_at?: string | null
 }
 
 export interface LoginRequest {
@@ -43,6 +45,7 @@ export interface Account {
   owner_id?: number
   cookie: string
   enabled: boolean
+  online?: boolean  // 在线状态：是否已建立真实 WebSocket 连接（口径同仪表盘“在线账号”）
   use_ai_reply: boolean
   use_default_reply: boolean
   auto_confirm: boolean
@@ -78,6 +81,7 @@ export interface AccountDetail extends Account {
   reply_delay_seconds?: number
   filter_count?: number  // 消息过滤规则数量
   today_reply_count?: number
+  owner_username?: string  // 账号所属用户名（管理员查看全量时展示）
 }
 
 // 关键词相关类型
@@ -138,6 +142,8 @@ export interface Order {
   is_bargain?: boolean  // 是否小刀
   is_rated?: boolean  // 是否已评价
   is_red_flower?: boolean  // 是否已求小红花
+  is_unregistered?: boolean  // 是否已请求注销接口
+  unregister_error_reason?: string  // 注销接口错误原因
   // 收货人信息
   receiver_name?: string  // 收货人姓名
   receiver_phone?: string  // 收货人手机号
@@ -146,6 +152,8 @@ export interface Order {
   delivery_method?: 'manual' | 'auto' | 'scheduled'  // 发货方式：manual-手动发货, auto-自动发货, scheduled-定时发货
   delivery_content?: string  // 发货内容（卡券内容）
   delivery_fail_reason?: string  // 发货失败原因
+  delivery_send_status?: 'success' | 'failed' | 'unknown' | 'timeout' | null  // 关联消息日志：发送状态
+  delivery_send_fail_reason?: string | null  // 关联消息日志：发送失败原因
   is_agent_order?: boolean  // 是否是代销订单
   source?: string  // 数据来源
   placed_at?: string  // 订单时间（下单时间）
@@ -154,10 +162,14 @@ export interface Order {
 }
 
 export type OrderStatus = 
+  | 'pending_payment'
   | 'processing' 
   | 'processed' 
+  | 'pending_ship'
   | 'shipped' 
   | 'completed' 
+  | 'refunding'
+  | 'refunded'
   | 'cancelled' 
   | 'unknown'
 
@@ -166,7 +178,7 @@ export interface NotificationChannel {
   id: string
   cookie_id?: string
   name: string
-  type: 'dingtalk' | 'feishu' | 'bark' | 'email' | 'webhook' | 'wechat' | 'telegram'
+  type: 'dingtalk' | 'feishu' | 'bark' | 'email' | 'webhook' | 'wechat' | 'telegram' | 'pushplus'
   channel_type?: string
   channel_name?: string
   channel_config?: string
@@ -269,6 +281,9 @@ export interface SystemSettings {
   // 代理设置
   'proxy.api_url'?: string
   'proxy.enabled'?: boolean
+  // 用户到期/续期设置
+  'user.renew_month_price'?: string
+  'user.register_default_days'?: string
   [key: string]: unknown
 }
 

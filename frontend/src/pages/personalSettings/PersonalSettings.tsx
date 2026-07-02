@@ -7,8 +7,8 @@
  * 3. 后续可扩展更多个人设置项
  */
 import { useState, useEffect, useRef } from 'react'
-import { User, RefreshCw, Wallet, Plus, Key, Link2, Copy, RotateCcw, Save, Package, X, ScrollText, ArrowUpFromLine, Upload, QrCode } from 'lucide-react'
-import { getUserSetting, updateUserSetting, changePassword, getDockCode, resetDockCode, getSecretKey, resetSecretKey, uploadPaymentQrcode, getSystemSettings } from '@/api/settings'
+import { User, RefreshCw, Wallet, Plus, Key, Link2, Copy, RotateCcw, Save, Package, X, ScrollText, ArrowUpFromLine, Upload, QrCode, Eye, EyeOff, CalendarClock } from 'lucide-react'
+import { getUserSetting, updateUserSetting, createCardSecretKey, changePassword, getDockCode, resetDockCode, getSecretKey, resetSecretKey, uploadPaymentQrcode, getSystemSettings, getCurrentUserProfile } from '@/api/settings'
 import { createWithdraw, getSettlementRecords, type SettlementRecord } from '@/api/payment'
 import { useUIStore } from '@/store/uiStore'
 import { useAuthStore } from '@/store/authStore'
@@ -16,14 +16,33 @@ import { PageLoading, ButtonLoading } from '@/components/common/Loading'
 import { ConfirmModal } from '@/components/common/ConfirmModal'
 import { RechargeModal } from './RechargeModal'
 import { FundFlowModal } from './FundFlowModal'
+import { RenewModal } from './RenewModal'
 
 // 余额设置的 key
 const BALANCE_KEY = 'balance'
+// 续期单价的系统设置 key（普通用户可读，用于计算续期总价）
+const RENEW_MONTH_PRICE_KEY = 'user.renew_month_price'
+
+// 格式化到期日展示（后端为北京时间 naive 字符串，无需做时区转换）
+// 形如 '2026-06-25T14:30:00' -> '2026-06-25 14:30:00'；空值显示「永不过期」
+const formatExpireAt = (value?: string | null): string => {
+  if (!value) return '永不过期'
+  return value.replace('T', ' ').slice(0, 19)
+}
+
+// 判断到期日是否已过期（到期日存在且早于当前时间）
+const isExpiredTime = (value?: string | null): boolean => {
+  if (!value) return false
+  const time = new Date(value).getTime()
+  return Number.isFinite(time) && time < Date.now()
+}
 const CONTACT_WECHAT_KEY = 'contact_wechat'
 const CONTACT_QQ_KEY = 'contact_qq'
 const REDELIVERY_TRIGGER_KEYWORD_KEY = 'redelivery_trigger_keyword'
 const PAYMENT_QRCODE_KEY = 'payment_qrcode'
 const PAYMENT_TYPE_KEY = 'payment_type'
+// 对接卡密秘钥的 key（按用户存储，用于「分销卡券」页面对接上游卡券系统）
+const CARD_SECRET_KEY = 'distribution.card_secret_key'
 
 export function PersonalSettings() {
   const { addToast } = useUIStore()
@@ -31,6 +50,9 @@ export function PersonalSettings() {
   const [loading, setLoading] = useState(true)
   const [balance, setBalance] = useState('')
   const [showRecharge, setShowRecharge] = useState(false)
+  const [expireAt, setExpireAt] = useState<string | null>(null)
+  const [renewPrice, setRenewPrice] = useState('')
+  const [showRenew, setShowRenew] = useState(false)
   const [showFundFlowModal, setShowFundFlowModal] = useState(false)
   const [showSettlementModal, setShowSettlementModal] = useState(false)
   const [settlementRecords, setSettlementRecords] = useState<SettlementRecord[]>([])
@@ -61,6 +83,12 @@ export function PersonalSettings() {
   const [secretKeyLoading, setSecretKeyLoading] = useState(false)
   const [resettingSecretKey, setResettingSecretKey] = useState(false)
   const [secretKeyResetConfirmOpen, setSecretKeyResetConfirmOpen] = useState(false)
+
+  // 对接卡密秘钥状态（用于分销卡券对接上游系统）
+  const [cardSecretKey, setCardSecretKey] = useState('')
+  const [savingCardSecretKey, setSavingCardSecretKey] = useState(false)
+  const [creatingCardSecretKey, setCreatingCardSecretKey] = useState(false)
+  const [showCardSecretKey, setShowCardSecretKey] = useState(false)
 
   // 联系方式状态
   const [contactWechat, setContactWechat] = useState('')
@@ -109,6 +137,27 @@ export function PersonalSettings() {
       const qqResult = await getUserSetting(CONTACT_QQ_KEY)
       if (qqResult.success && qqResult.value !== undefined) {
         setContactQQ(qqResult.value)
+      }
+      // 加载对接卡密秘钥
+      const cardKeyResult = await getUserSetting(CARD_SECRET_KEY)
+      if (cardKeyResult.success && cardKeyResult.value !== undefined) {
+        setCardSecretKey(cardKeyResult.value)
+      }
+      // 加载当前用户到期日
+      try {
+        const profile = await getCurrentUserProfile()
+        setExpireAt(profile.expire_at ?? null)
+      } catch {
+        // 到期日加载失败不阻断其他设置展示
+      }
+      // 加载续期单价（普通用户可读）
+      try {
+        const sysResult = await getSystemSettings()
+        if (sysResult.success && sysResult.data) {
+          setRenewPrice(String(sysResult.data[RENEW_MONTH_PRICE_KEY] ?? ''))
+        }
+      } catch {
+        // 续期单价加载失败不阻断其他设置展示
       }
     } catch {
       setBalance('0.00')
@@ -207,6 +256,44 @@ export function PersonalSettings() {
     }).catch(() => {
       addToast({ type: 'error', message: '复制失败，请手动复制' })
     })
+  }
+
+  // 保存对接卡密秘钥
+  const handleSaveCardSecretKey = async () => {
+    try {
+      setSavingCardSecretKey(true)
+      const result = await updateUserSetting(CARD_SECRET_KEY, cardSecretKey.trim(), '对接卡密秘钥')
+      if (result.success) {
+        addToast({ type: 'success', message: '对接卡密秘钥已保存' })
+      } else {
+        addToast({ type: 'error', message: result.message || '保存失败' })
+      }
+    } catch {
+      addToast({ type: 'error', message: '保存对接卡密秘钥失败' })
+    } finally {
+      setSavingCardSecretKey(false)
+    }
+  }
+
+  // 一键创建对接卡密秘钥：调用外部密钥服务创建并自动保存到当前用户
+  const handleCreateCardSecretKey = async () => {
+    // 已存在则禁止创建，提示联系管理员重置
+    if (cardSecretKey.trim()) {
+      addToast({ type: 'warning', message: '对接卡密秘钥已存在，如需重新创建请联系管理员重置' })
+      return
+    }
+    try {
+      setCreatingCardSecretKey(true)
+      const result = await createCardSecretKey()
+      if (result.success && result.data?.key_value) {
+        setCardSecretKey(result.data.key_value)
+        addToast({ type: 'success', message: result.message || '对接卡密秘钥创建成功' })
+      } else {
+        addToast({ type: 'error', message: result.message || '创建失败' })
+      }
+    } finally {
+      setCreatingCardSecretKey(false)
+    }
   }
 
   const loadSettlementRecords = async (page: number = 1, pageSize: number = settlementPageSize) => {
@@ -444,6 +531,27 @@ export function PersonalSettings() {
                 className="input-ios bg-gray-50 dark:bg-gray-800 cursor-not-allowed"
               />
             </div>
+            <div className="md:col-span-2">
+              <label className="input-label">账户到期日</label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={formatExpireAt(expireAt)}
+                  disabled
+                  className={`input-ios flex-1 bg-gray-50 dark:bg-gray-800 cursor-not-allowed ${isExpiredTime(expireAt) ? 'text-red-500 dark:text-red-400' : ''}`}
+                />
+                <button
+                  onClick={() => setShowRenew(true)}
+                  className="btn-ios-primary whitespace-nowrap"
+                >
+                  <CalendarClock className="w-4 h-4" />
+                  续期
+                </button>
+              </div>
+              {isExpiredTime(expireAt) && (
+                <p className="mt-1 text-xs text-red-500">账户已到期，请尽快续期以恢复服务。</p>
+              )}
+            </div>
           </div>
         </div>
       </div>
@@ -606,6 +714,52 @@ export function PersonalSettings() {
               >
                 <RotateCcw className={`w-4 h-4 ${resettingSecretKey ? 'animate-spin' : ''}`} />
                 更换
+              </button>
+            </div>
+          </div>
+
+          {/* 对接卡密秘钥设置 */}
+          <div>
+            <label className="input-label">对接卡密秘钥</label>
+            <p className="text-xs text-gray-500 mb-2">用于「分销卡券」页面对接上游卡券系统的鉴权秘钥，请妥善保管。修改后点击「保存」生效。</p>
+            <p className="text-xs text-gray-500 mb-2">秘钥资金流水和余额充值，请进入 <a className="text-xs text-blue-600 dark:text-blue-400 mb-2" href="http://agent.zhinianboke.com" target='_BLANK'>agent.zhinianboke.com</a> 中进行操作。</p>
+            <p className="text-xs text-blue-600 dark:text-blue-400 mb-2">如有其他疑问可联系 QQ：531779708 微信：zhinian_znbk</p>
+            <div className="flex items-center gap-3 flex-wrap">
+              <div className="relative flex-1 min-w-[260px]">
+                <input
+                  type="text"
+                  value={cardSecretKey}
+                  onChange={(e) => setCardSecretKey(e.target.value)}
+                  placeholder="请输入对接卡密秘钥"
+                  className="input-ios pr-10"
+                  style={{ WebkitTextSecurity: showCardSecretKey ? 'none' : 'disc' } as React.CSSProperties}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowCardSecretKey(!showCardSecretKey)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 transition-colors"
+                  title={showCardSecretKey ? '隐藏' : '显示'}
+                >
+                  {showCardSecretKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+              <button
+                onClick={handleCreateCardSecretKey}
+                disabled={creatingCardSecretKey || !!cardSecretKey.trim()}
+                className="btn-ios-secondary text-sm"
+                title={cardSecretKey.trim() ? '秘钥已存在，如需重新创建请联系管理员重置' : '一键创建对接卡密秘钥'}
+              >
+                {creatingCardSecretKey ? <ButtonLoading /> : <Plus className="w-4 h-4" />}
+                创建
+              </button>
+              <button
+                onClick={handleSaveCardSecretKey}
+                disabled={savingCardSecretKey}
+                className="btn-ios-primary text-sm"
+                title="保存对接卡密秘钥"
+              >
+                {savingCardSecretKey ? <ButtonLoading /> : <Save className="w-4 h-4" />}
+                保存
               </button>
             </div>
           </div>
@@ -1051,6 +1205,20 @@ export function PersonalSettings() {
         visible={showRecharge}
         onClose={() => setShowRecharge(false)}
         onSuccess={loadSettings}
+      />
+
+      {/* 续期弹窗 */}
+      <RenewModal
+        visible={showRenew}
+        unitPrice={renewPrice}
+        balance={balance || '0'}
+        onClose={() => setShowRenew(false)}
+        onSuccess={(newExpireAt) => {
+          setExpireAt(newExpireAt)
+          setShowRenew(false)
+          // 续期会扣减余额，刷新余额与到期日
+          loadSettings()
+        }}
       />
     </div>
   )

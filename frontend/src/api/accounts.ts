@@ -39,6 +39,7 @@ export interface AccountFilterParams {
   auto_polish?: boolean | null           // 商品擦亮
   auto_confirm?: boolean | null          // 自动确认收货
   has_password?: boolean | null          // 是否配置密码
+  online?: boolean | null                // 在线状态（true=在线/false=离线）
   disable_reason?: string | null         // 禁用原因关键词（模糊搜索）
   account_id?: string | null             // 账号ID关键词（模糊搜索）
 }
@@ -60,6 +61,7 @@ export const getAccountDetailsPaginated = async (
     id: string
     value: string
     enabled: boolean
+    online?: boolean
     auto_confirm: boolean
     scheduled_redelivery?: boolean
     scheduled_rate?: boolean
@@ -86,6 +88,8 @@ export const getAccountDetailsPaginated = async (
     today_reply_count?: number
     keyword_count?: number
     ai_enabled?: boolean
+    owner_id?: number
+    owner_username?: string
     created_at?: string
     updated_at?: string
   }
@@ -103,6 +107,7 @@ export const getAccountDetailsPaginated = async (
     if (filters.auto_polish !== null && filters.auto_polish !== undefined) params.append('auto_polish', String(filters.auto_polish))
     if (filters.auto_confirm !== null && filters.auto_confirm !== undefined) params.append('auto_confirm', String(filters.auto_confirm))
     if (filters.has_password !== null && filters.has_password !== undefined) params.append('has_password', String(filters.has_password))
+    if (filters.online !== null && filters.online !== undefined) params.append('online', String(filters.online))
     // 禁用原因：模糊搜索关键词，去除前后空白后再判断是否传参，避免发送空字符串
     if (filters.disable_reason && filters.disable_reason.trim()) {
       params.append('disable_reason', filters.disable_reason.trim())
@@ -128,6 +133,7 @@ export const getAccountDetailsPaginated = async (
       id: item.id,
       cookie: item.value,
       enabled: item.enabled,
+      online: item.online ?? false,
       auto_confirm: item.auto_confirm,
       scheduled_redelivery: item.scheduled_redelivery || false,
       scheduled_rate: item.scheduled_rate || false,
@@ -156,6 +162,8 @@ export const getAccountDetailsPaginated = async (
       today_reply_count: item.today_reply_count || 0,
       keywordCount: item.keyword_count || 0,
       aiEnabled: item.ai_enabled || false,
+      owner_id: item.owner_id,
+      owner_username: item.owner_username || '',
       use_ai_reply: false,
       use_default_reply: false,
       created_at: item.created_at,
@@ -537,6 +545,32 @@ export const updateProxyConfig = (accountId: string, config: ProxyConfig): Promi
 // 清除代理配置
 export const clearProxyConfig = (accountId: string): Promise<ProxyConfigResponse> => {
   return del(`${PROXY_PREFIX}/${accountId}`)
+}
+
+// ==================== 退款订单注销配置 ====================
+
+const REFUND_CANCEL_PREFIX = '/api/v1/refund-cancel'
+
+export interface RefundCancelConfig {
+  enabled: boolean      // 是否开启退款订单注销
+  url?: string | null   // 注销接口请求URL
+  timeout?: number      // 请求超时时间(秒)
+}
+
+export interface RefundCancelConfigResponse {
+  success: boolean
+  message?: string
+  data?: RefundCancelConfig
+}
+
+// 获取退款订单注销配置
+export const getRefundCancelConfig = (accountId: string): Promise<RefundCancelConfigResponse> => {
+  return get(`${REFUND_CANCEL_PREFIX}/${accountId}`)
+}
+
+// 更新退款订单注销配置
+export const updateRefundCancelConfig = (accountId: string, config: RefundCancelConfig): Promise<RefundCancelConfigResponse> => {
+  return put(`${REFUND_CANCEL_PREFIX}/${accountId}`, config)
 }
 
 // ==================== 人脸验证相关 ====================

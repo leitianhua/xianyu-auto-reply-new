@@ -12,7 +12,7 @@ import { BlacklistLevelModal } from './BlacklistLevelModal'
 import type { Order, Account } from '@/types'
 
 // 列配置类型
-type ColumnKey = 'cookie_id' | 'order_id' | 'receiver' | 'item_id' | 'sku_info' | 'buyer_id' | 'buyer_fish_nick' | 'chat_id' | 'quantity' | 'amount' | 'status' | 'delivery_method' | 'delivery_fail_reason' | 'is_bargain' | 'is_rated' | 'is_red_flower' | 'is_agent_order' | 'source' | 'placed_at' | 'created_at'
+type ColumnKey = 'cookie_id' | 'order_id' | 'receiver' | 'item_id' | 'sku_info' | 'buyer_id' | 'buyer_fish_nick' | 'chat_id' | 'quantity' | 'amount' | 'status' | 'delivery_method' | 'delivery_send_status' | 'delivery_fail_reason' | 'is_bargain' | 'is_rated' | 'is_red_flower' | 'is_unregistered' | 'unregister_error_reason' | 'is_agent_order' | 'source' | 'placed_at' | 'created_at'
 
 interface ColumnConfig {
   key: ColumnKey
@@ -35,10 +35,13 @@ const defaultColumns: ColumnConfig[] = [
   { key: 'amount', label: '金额', visible: true, fixed: true },
   { key: 'status', label: '状态', visible: true, fixed: true },
   { key: 'delivery_method', label: '发货方式', visible: true, fixed: true },
+  { key: 'delivery_send_status', label: '发送状态', visible: true },
   { key: 'delivery_fail_reason', label: '发货失败原因', visible: true },
   { key: 'is_bargain', label: '小刀', visible: true, fixed: true },
   { key: 'is_rated', label: '已评价', visible: true, fixed: true },
   { key: 'is_red_flower', label: '小红花', visible: true, fixed: true },
+  { key: 'is_unregistered', label: '已注销', visible: true, fixed: true },
+  { key: 'unregister_error_reason', label: '注销错误', visible: true, fixed: true },
   { key: 'is_agent_order', label: '代销', visible: true, fixed: true },
   { key: 'source', label: '数据来源', visible: true },
   { key: 'placed_at', label: '订单时间', visible: true, fixed: true },
@@ -53,6 +56,7 @@ const statusMap: Record<string, { label: string; class: string }> = {
   shipped: { label: '已发货', class: 'badge-success' },
   completed: { label: '已完成', class: 'badge-success' },
   refunding: { label: '退款中', class: 'badge-warning' },
+  refunded: { label: '已退款', class: 'badge-danger' },
   cancelled: { label: '已关闭', class: 'badge-danger' },
   unknown: { label: '未知', class: 'badge-gray' },
 }
@@ -85,6 +89,7 @@ export function Orders() {
     is_rated: null,
     start_date: null,
     end_date: null,
+    delivery_send_status: null,
   })
 
   // 勾选状态
@@ -160,6 +165,7 @@ export function Orders() {
       is_rated: null,
       start_date: null,
       end_date: null,
+      delivery_send_status: null,
     }
     setFilters(emptyFilters)
     const hasAccountOrStatusFilter = Boolean(selectedAccount || selectedStatus)
@@ -477,6 +483,7 @@ export function Orders() {
                     { value: 'shipped', label: '已发货' },
                     { value: 'completed', label: '已完成' },
                     { value: 'refunding', label: '退款中' },
+                    { value: 'refunded', label: '已退款' },
                     { value: 'cancelled', label: '已关闭' },
                   ]}
                   placeholder="所有状态"
@@ -494,6 +501,20 @@ export function Orders() {
                   <option value="manual">手动发货</option>
                   <option value="auto">自动发货</option>
                   <option value="scheduled">定时发货</option>
+                </select>
+              </div>
+              <div className="input-group">
+                <label className="input-label">发送状态</label>
+                <select
+                  value={filters.delivery_send_status || ''}
+                  onChange={(e) => handleFilterChange('delivery_send_status', e.target.value || null)}
+                  className="input-ios"
+                >
+                  <option value="">全部</option>
+                  <option value="success">发送成功</option>
+                  <option value="failed">发送失败</option>
+                  <option value="unknown">待确认</option>
+                  <option value="timeout">超时</option>
                 </select>
               </div>
               <div className="input-group">
@@ -676,6 +697,33 @@ export function Orders() {
                                 )}
                               </td>
                             )
+                          case 'delivery_send_status':
+                            return (
+                              <td key={col.key} className="whitespace-nowrap text-sm">
+                                {order.delivery_send_status ? (
+                                  <div className="group relative cursor-pointer">
+                                    <span className={
+                                      order.delivery_send_status === 'success' ? 'badge-success' :
+                                      order.delivery_send_status === 'failed' ? 'badge-danger' :
+                                      order.delivery_send_status === 'timeout' ? 'badge-warning' :
+                                      'badge-gray'
+                                    }>
+                                      {order.delivery_send_status === 'success' ? '发送成功' :
+                                       order.delivery_send_status === 'failed' ? '发送失败' :
+                                       order.delivery_send_status === 'timeout' ? '超时' :
+                                       '待确认'}
+                                    </span>
+                                    {order.delivery_send_fail_reason ? (
+                                      <div className="absolute left-0 top-full mt-1 z-50 hidden group-hover:block bg-gray-800 text-white text-xs rounded-lg px-3 py-2 max-w-sm whitespace-normal shadow-lg break-words">
+                                        {order.delivery_send_fail_reason}
+                                      </div>
+                                    ) : null}
+                                  </div>
+                                ) : (
+                                  <span className="text-gray-400">-</span>
+                                )}
+                              </td>
+                            )
                           case 'delivery_fail_reason':
                             return (
                               <td key={col.key} className="whitespace-nowrap text-sm">
@@ -719,6 +767,24 @@ export function Orders() {
                                 ) : (
                                   <span className="badge-gray">否</span>
                                 )}
+                              </td>
+                            )
+                          case 'is_unregistered':
+                            return (
+                              <td key={col.key} className="whitespace-nowrap">
+                                {order.is_unregistered ? (
+                                  <span className="badge-success">是</span>
+                                ) : (
+                                  <span className="badge-gray">否</span>
+                                )}
+                              </td>
+                            )
+                          case 'unregister_error_reason':
+                            return (
+                              <td key={col.key} className="max-w-[200px] truncate" title={order.unregister_error_reason || ''}>
+                                {order.unregister_error_reason
+                                  ? <span className="text-red-500 text-xs">{order.unregister_error_reason}</span>
+                                  : <span className="text-slate-400">-</span>}
                               </td>
                             )
                           case 'is_agent_order':
@@ -997,6 +1063,34 @@ export function Orders() {
                         <pre className="whitespace-pre-wrap break-words text-red-700 dark:text-red-300">
                           {orderDetail.delivery_fail_reason}
                         </pre>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* 关联消息日志：发送状态 */}
+                  {orderDetail.delivery_send_status && (
+                    <div>
+                      <h3 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">消息发送状态</h3>
+                      <div className="bg-gray-50 dark:bg-gray-800 rounded-lg p-3 text-sm space-y-2">
+                        <div className="flex items-center gap-2">
+                          <span className="text-gray-500">发送状态</span>
+                          <span className={
+                            orderDetail.delivery_send_status === 'success' ? 'badge-success' :
+                            orderDetail.delivery_send_status === 'failed' ? 'badge-danger' :
+                            orderDetail.delivery_send_status === 'timeout' ? 'badge-warning' :
+                            'badge-gray'
+                          }>
+                            {orderDetail.delivery_send_status === 'success' ? '发送成功' :
+                             orderDetail.delivery_send_status === 'failed' ? '发送失败' :
+                             orderDetail.delivery_send_status === 'timeout' ? '超时' :
+                             '待确认'}
+                          </span>
+                        </div>
+                        {orderDetail.delivery_send_fail_reason ? (
+                          <pre className="whitespace-pre-wrap break-words text-red-700 dark:text-red-300">
+                            {orderDetail.delivery_send_fail_reason}
+                          </pre>
+                        ) : null}
                       </div>
                     </div>
                   )}

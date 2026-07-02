@@ -78,14 +78,21 @@ export const getItemsPaginated = async (
   return result
 }
 
-// 删除商品
-export const deleteItem = (cookieId: string, itemId: string): Promise<ApiResponse> => {
-  return del(`${ITEM_PREFIX}/${cookieId}/${itemId}`)
+// 删除商品（账号可选）
+// - 传入 cookieId：按账号删除
+// - cookieId 为空（账号已删除的孤儿商品）：后端按商品ID删除
+export const deleteItem = (cookieId: string | null | undefined, itemId: string): Promise<ApiResponse> => {
+  return del(`${ITEM_PREFIX}/delete`, { data: { cookie_id: cookieId || null, item_id: itemId } })
 }
 
 // 批量删除商品
 export const batchDeleteItems = (ids: { cookie_id: string; item_id: string }[]): Promise<ApiResponse> => {
   return del(`${ITEM_PREFIX}/batch`, { data: { items: ids } })
+}
+
+// 批量下架商品（调用闲鱼接口，使用所选账号的Cookie）
+export const batchOfflineItems = (cookieId: string, itemIds: string[]): Promise<ApiResponse> => {
+  return post(`${ITEM_PREFIX}/batch-offline`, { cookie_id: cookieId, item_ids: itemIds })
 }
 
 // 从账号获取商品（分页）

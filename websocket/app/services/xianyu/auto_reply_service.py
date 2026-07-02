@@ -682,6 +682,7 @@ class AutoReplyService:
                     send_message=send_message,
                     chat_id=chat_id,
                     item_id=item_id,
+                    msg_time=msg_time,
                 )
                 
                 if reply:
@@ -1013,7 +1014,8 @@ class AutoReplyService:
                         send_email_notification,
                         send_webhook_notification,
                         send_wechat_notification,
-                        send_telegram_notification
+                        send_telegram_notification,
+                        send_pushplus_notification
                     )
                     
                     config_data = parse_notification_config(channel_config)
@@ -1032,6 +1034,8 @@ class AutoReplyService:
                         await send_wechat_notification(config_data, notification_content)
                     elif channel_type == 'telegram':
                         await send_telegram_notification(config_data, notification_content)
+                    elif channel_type == 'pushplus':
+                        await send_pushplus_notification(config_data, notification_content)
                     else:
                         logger.warning(f"【{self.cookie_id}】不支持的通知渠道类型: {channel_type}")
                         
@@ -1050,6 +1054,7 @@ class AutoReplyService:
         send_message: str,
         chat_id: str,
         item_id: Optional[str] = None,
+        msg_time: str = "",
     ) -> Optional[str]:
         """获取自动回复(主入口)
         
@@ -1061,6 +1066,7 @@ class AutoReplyService:
             send_message: 发送的消息内容
             chat_id: 会话ID
             item_id: 商品ID(可选)
+            msg_time: 消息时间
             
         Returns:
             回复内容,None表示不回复
@@ -1095,7 +1101,7 @@ class AutoReplyService:
                     return ai_reply
                 
                 default_reply = await self.get_default_reply(
-                    session, send_user_name, send_user_id, send_message, chat_id, item_id
+                    session, send_user_name, send_user_id, send_message, chat_id, item_id, msg_time
                 )
                 if default_reply:
                     if default_reply == "EMPTY_REPLY":
@@ -1159,21 +1165,23 @@ class AutoReplyService:
             if item_id:
                 for kw in keywords:
                     keyword = kw.get("keyword", "")
+                    keyword_lines = [line.strip() for line in keyword.splitlines() if line.strip()]
                     reply = kw.get("reply", "")
                     kw_item_id = kw.get("item_id", "")
                     kw_type = kw.get("type", "text")
                     image_url = kw.get("image_url", "")
+                    matched_keyword = next((line for line in keyword_lines if line.lower() in msg_lower), "")
                     
-                    if kw_item_id == item_id and keyword.lower() in msg_lower:
-                        logger.info(f"商品ID关键词匹配成功: 商品{item_id} '{keyword}' (类型: {kw_type})")
+                    if kw_item_id == item_id and matched_keyword:
+                        logger.info(f"商品ID关键词匹配成功: 商品{item_id} '{matched_keyword}' (类型: {kw_type})")
                         if reply_trace is not None:
                             reply_trace["reply_strategy"] = "keyword"
-                            reply_trace["matched_keyword"] = keyword
+                            reply_trace["matched_keyword"] = matched_keyword
                             reply_trace["matched_rule_type"] = "keyword_item"
                             reply_trace.setdefault("context_snapshot", {})["matched_item_title"] = kw.get("item_title") or None
                         
                         if kw_type == "image" and image_url:
-                            image_reply = await self._handle_image_keyword(keyword, image_url)
+                            image_reply = await self._handle_image_keyword(matched_keyword, image_url)
                             if reply_trace is not None:
                                 if image_reply.startswith("__IMAGE_SEND__"):
                                     reply_trace["reply_mode"] = "image"
@@ -1186,7 +1194,7 @@ class AutoReplyService:
                             return image_reply
                         
                         if not reply or not reply.strip():
-                            logger.info(f"商品ID关键词 '{keyword}' 回复内容为空,不进行回复")
+                            logger.info(f"商品ID关键词 '{matched_keyword}' 回复内容为空,不进行回复")
                             return "EMPTY_REPLY"
                         
                         try:
@@ -1213,20 +1221,22 @@ class AutoReplyService:
             
             for kw in keywords:
                 keyword = kw.get("keyword", "")
+                keyword_lines = [line.strip() for line in keyword.splitlines() if line.strip()]
                 reply = kw.get("reply", "")
                 kw_item_id = kw.get("item_id", "")
                 kw_type = kw.get("type", "text")
                 image_url = kw.get("image_url", "")
+                matched_keyword = next((line for line in keyword_lines if line.lower() in msg_lower), "")
 
-                if not kw_item_id and keyword.lower() in msg_lower:
-                    logger.info(f"通用关键词匹配成功: '{keyword}' (类型: {kw_type})")
+                if not kw_item_id and matched_keyword:
+                    logger.info(f"通用关键词匹配成功: '{matched_keyword}' (类型: {kw_type})")
                     if reply_trace is not None:
                         reply_trace["reply_strategy"] = "keyword"
-                        reply_trace["matched_keyword"] = keyword
+                        reply_trace["matched_keyword"] = matched_keyword
                         reply_trace["matched_rule_type"] = "keyword_common"
 
                     if kw_type == "image" and image_url:
-                        image_reply = await self._handle_image_keyword(keyword, image_url)
+                        image_reply = await self._handle_image_keyword(matched_keyword, image_url)
                         if reply_trace is not None:
                             if image_reply.startswith("__IMAGE_SEND__"):
                                 reply_trace["reply_mode"] = "image"
@@ -1239,7 +1249,7 @@ class AutoReplyService:
                         return image_reply
 
                     if not reply or not reply.strip():
-                        logger.info(f"通用关键词 '{keyword}' 回复内容为空,不进行回复")
+                        logger.info(f"通用关键词 '{matched_keyword}' 回复内容为空,不进行回复")
                         return "EMPTY_REPLY"
 
                     try:
@@ -1367,6 +1377,10 @@ class AutoReplyService:
         settings: dict,
         settings_item_id: Optional[str],
         chat_id: str,
+        send_user_id: str,
+        send_user_name: str,
+        item_id: Optional[str],
+        msg_time: str,
         reply_trace: Optional[dict],
     ) -> Optional[str]:
         """调用外部 API 获取默认回复内容并处理结果。
@@ -1380,6 +1394,11 @@ class AutoReplyService:
             message=send_message,
             api_url=api_url,
             timeout=api_timeout,
+            chat_id=chat_id,
+            item_id=item_id or "",
+            send_user_id=send_user_id,
+            send_user_name=send_user_name,
+            msg_time=msg_time,
         )
 
         # 失败/无有效内容：不回复（不记录 reply_once，便于下次重试）
@@ -1412,6 +1431,7 @@ class AutoReplyService:
         send_message: str,
         chat_id: str,
         item_id: Optional[str] = None,
+        msg_time: str = "",
     ) -> Optional[str]:
         """获取默认回复
         
@@ -1427,6 +1447,7 @@ class AutoReplyService:
             send_message: 发送的消息内容
             chat_id: 会话ID
             item_id: 商品ID(可选)
+            msg_time: 消息时间
             
         Returns:
             回复内容,None表示不回复,"EMPTY_REPLY"表示回复为空
@@ -1479,6 +1500,10 @@ class AutoReplyService:
                         settings=settings,
                         settings_item_id=settings_item_id,
                         chat_id=chat_id,
+                        send_user_id=send_user_id,
+                        send_user_name=send_user_name,
+                        item_id=item_id,
+                        msg_time=msg_time,
                         reply_trace=reply_trace,
                     )
 
@@ -1515,6 +1540,10 @@ class AutoReplyService:
                                 settings=settings,
                                 settings_item_id=settings_item_id,
                                 chat_id=chat_id,
+                                send_user_id=send_user_id,
+                                send_user_name=send_user_name,
+                                item_id=item_id,
+                                msg_time=msg_time,
                                 reply_trace=reply_trace,
                             )
                         # 持锁后重新核对 reply_once：前一条同会话消息可能刚已回复并记录
@@ -1538,6 +1567,10 @@ class AutoReplyService:
                             settings=settings,
                             settings_item_id=settings_item_id,
                             chat_id=chat_id,
+                            send_user_id=send_user_id,
+                            send_user_name=send_user_name,
+                            item_id=item_id,
+                            msg_time=msg_time,
                             reply_trace=reply_trace,
                         )
                 except Exception as lock_exc:
@@ -1553,6 +1586,10 @@ class AutoReplyService:
                         settings=settings,
                         settings_item_id=settings_item_id,
                         chat_id=chat_id,
+                        send_user_id=send_user_id,
+                        send_user_name=send_user_name,
+                        item_id=item_id,
+                        msg_time=msg_time,
                         reply_trace=reply_trace,
                     )
 

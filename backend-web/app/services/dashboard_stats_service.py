@@ -8,11 +8,16 @@
 """
 from __future__ import annotations
 
+import asyncio
+import logging
+import time
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
+from app.core.http_client import get_http_client
 from app.services.auto_reply_stats_service import AutoReplyStatsService
 from app.services.dashboard_stats_cache_service import DashboardStatsCacheService
 from common.models.agent_order import AgentOrder
@@ -23,14 +28,25 @@ from common.models.xy_keyword_rule import XYKeywordRule
 from common.models.xy_order import XYOrder
 from common.services.account_limit_service import AccountLimitService
 
+logger = logging.getLogger(__name__)
+
 BEIJING_TZ = timezone(timedelta(hours=8))
 
 
 class DashboardStatsService:
     """仪表盘统计聚合服务。"""
 
+    # Online cookies cache: (timestamp, count)
+    _online_cookies_cache: tuple[float, int] | None = None
+    _ONLINE_COOKIES_CACHE_TTL = 10  # seconds
+
+    # Online account-id set cache: (timestamp, frozenset[account_id])
+    _online_ids_cache: tuple[float, frozenset[str]] | None = None
+    _ONLINE_IDS_CACHE_TTL = 10  # seconds
+
     INACTIVE_ACCOUNT_STATUSES = ("inactive", "disabled", "suspended", "deleted")
-    CLOSED_ORDER_STATUSES = ("cancelled", "已关闭")
+    # 已关闭/已退款订单：不计入营收、有效订单与待处理统计
+    CLOSED_ORDER_STATUSES = ("cancelled", "已关闭", "refunded", "退款成功", "已退款")
     SHIPPED_ORDER_STATUSES = ("shipped", "completed", "已发货", "已完成")
     PENDING_EXCLUDED_ORDER_STATUSES = (*CLOSED_ORDER_STATUSES, *SHIPPED_ORDER_STATUSES)
 
@@ -278,16 +294,69 @@ class DashboardStatsService:
             "remaining_account_count": limit_status["remaining_count"],
         }
 
+    async def _get_online_cookies_count(self) -> int:
+        """实时获取真实 WebSocket 在线账号数（10 秒 TTL 缓存）。
+
+        失败时返回 0，不影响其它统计展示。
+        """
+        now = time.time()
+        if self.__class__._online_cookies_cache is not None:
+            ts, count = self.__class__._online_cookies_cache
+            if now - ts < self._ONLINE_COOKIES_CACHE_TTL:
+                return count
+
+        try:
+            settings = get_settings()
+            url = f"{settings.websocket_service_url.rstrip('/')}/internal/accounts/connection-stats"
+            response = await get_http_client().get(url)
+            if isinstance(response, dict) and response.get("success"):
+                count = int((response.get("data") or {}).get("connected", 0) or 0)
+                self.__class__._online_cookies_cache = (now, count)
+                return count
+        except Exception as e:
+            logger.warning(f"获取在线账号数失败: {e}")
+        return 0
+
+    async def get_online_account_ids(self) -> frozenset[str]:
+        """实时获取真实 WebSocket 在线账号 ID 集合（10 秒 TTL 缓存）。
+
+        口径与仪表盘“在线账号”一致：取 websocket 服务 connection-stats 的
+        connected_account_ids（真正建立 WebSocket 连接的账号）。失败返回空集合。
+        """
+        now = time.time()
+        if self.__class__._online_ids_cache is not None:
+            ts, ids = self.__class__._online_ids_cache
+            if now - ts < self._ONLINE_IDS_CACHE_TTL:
+                return ids
+
+        try:
+            settings = get_settings()
+            url = f"{settings.websocket_service_url.rstrip('/')}/internal/accounts/connection-stats"
+            # 加 3 秒超时上限：websocket 慢/不可达时也不会拖慢账号列表（最多等 3 秒即按离线处理）
+            response = await asyncio.wait_for(get_http_client().get(url), timeout=3.0)
+            if isinstance(response, dict) and response.get("success"):
+                raw_ids = (response.get("data") or {}).get("connected_account_ids") or []
+                ids = frozenset(str(x) for x in raw_ids)
+                self.__class__._online_ids_cache = (now, ids)
+                return ids
+        except Exception as e:
+            logger.warning(f"获取在线账号ID列表失败: {e}")
+        # 失败也缓存（空集合，10 秒）：避免 websocket 异常时每次账号列表请求都重试拖慢响应
+        self.__class__._online_ids_cache = (now, frozenset())
+        return frozenset()
+
     async def get_admin_dashboard_stats(self, *, current_user_id: int) -> dict[str, int | None]:
         """获取管理员首页全局统计。"""
         bundle = await self._get_admin_dashboard_bundle()
         limit_status = await self._get_limit_status(current_user_id)
         admin_stats = bundle["admin_stats"]
+        online_cookies = await self._get_online_cookies_count()
 
         return {
             "total_users": int(admin_stats["total_users"]),
             "total_cookies": int(admin_stats["total_cookies"]),
             "active_cookies": int(admin_stats["active_cookies"]),
+            "online_cookies": online_cookies,
             "total_keywords": int(admin_stats["total_keywords"]),
             "total_orders": int(admin_stats["total_orders"]),
             "today_reply_count": int(admin_stats["today_reply_count"]),

@@ -28,9 +28,10 @@ class XYAutoReplyMessageLog(Base):
         Index("idx_arml_status_created", "process_status", "created_at"),
         Index("idx_arml_status_strategy_created", "process_status", "reply_strategy", "created_at"),
         Index("idx_arml_strategy_created", "reply_strategy", "created_at"),
+        Index("idx_arml_order_strategy_id", "order_no", "reply_strategy", "id"),
     )
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True, comment="主键ID")
     owner_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True, comment="所属系统用户ID")
     owner_username: Mapped[str | None] = mapped_column(String(120), comment="所属系统用户名")
     account_pk: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True, comment="账号主键ID")
@@ -39,6 +40,7 @@ class XYAutoReplyMessageLog(Base):
     chat_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True, comment="聊天会话ID")
     item_id: Mapped[str | None] = mapped_column(String(64), index=True, comment="商品ID")
     item_title: Mapped[str | None] = mapped_column(String(255), comment="商品标题")
+    order_no: Mapped[str | None] = mapped_column(String(64), index=True, comment="订单号（自动发货等场景关联订单）")
     source_message_id: Mapped[str | None] = mapped_column(String(128), index=True, comment="源消息ID")
     sender_user_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True, comment="发送方闲鱼用户ID")
     sender_user_name: Mapped[str | None] = mapped_column(String(120), comment="发送方昵称")
@@ -58,10 +60,10 @@ class XYAutoReplyMessageLog(Base):
     reply_image_url: Mapped[str | None] = mapped_column(String(1000), comment="回复图片URL")
     reply_segments: Mapped[list | None] = mapped_column(JSON, comment="拆分后的回复分段")
     error_message: Mapped[str | None] = mapped_column(Text, comment="错误信息")
-    send_status: Mapped[str] = mapped_column(String(20), nullable=False, default="unknown", comment="发送状态：success-发送成功/failed-发送失败/unknown-未知(无响应)")
+    send_status: Mapped[str] = mapped_column(String(20), nullable=False, default="unknown", comment="发送状态：success-发送成功/failed-发送失败/unknown-未知(无响应)/timeout-超时(无响应超过阈值)")
     send_fail_reason: Mapped[str | None] = mapped_column(Text, comment="发送失败原因（如被安全拦截的明文文案）")
     raw_message_json: Mapped[dict | None] = mapped_column(JSON, comment="原始消息JSON")
     context_snapshot: Mapped[dict | None] = mapped_column(JSON, comment="上下文快照")
     send_result_json: Mapped[list | dict | None] = mapped_column(JSON, comment="发送结果快照")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), comment="创建时间")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), comment="更新时间")

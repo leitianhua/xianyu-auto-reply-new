@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from common.services.account_limit_service import AccountLimitService
@@ -80,6 +80,8 @@ class AccountService:
         has_password: bool | None = None,
         disable_reason: str | None = None,
         account_id: str | None = None,
+        online: bool | None = None,
+        online_account_ids: list[str] | None = None,
     ) -> tuple[list[XYAccount], int]:
         """获取账号列表（分页），支持多条件筛选
         
@@ -96,7 +98,9 @@ class AccountService:
             has_password: 是否配置密码筛选
             disable_reason: 禁用原因模糊搜索关键词（LIKE %keyword%）
             account_id: 账号ID模糊搜索关键词（LIKE %keyword%）
-            
+            online: 在线状态筛选（True=仅在线 / False=仅离线 / None=不筛选）
+            online_account_ids: 当前在线账号ID集合（口径同仪表盘“在线账号”，由调用方实时取得）
+
         Returns:
             (账号列表, 总数)
         """
@@ -171,6 +175,16 @@ class AccountService:
             account_id_keyword = account_id.strip()
             if account_id_keyword:
                 conditions.append(XYAccount.account_id.ilike(f"%{account_id_keyword}%"))
+
+        # 在线状态筛选：在线集合来自 websocket 实时连接（不在库内），
+        # 故以 account_id IN / NOT IN 在线集合 的方式参与 SQL 条件，保证分页正确。
+        # 空集合时：online=True 匹配为空（无人在线）；online=False 匹配全部（与语义一致）。
+        if online is not None:
+            online_ids = [str(x) for x in (online_account_ids or [])]
+            if online:
+                conditions.append(XYAccount.account_id.in_(online_ids))
+            else:
+                conditions.append(XYAccount.account_id.notin_(online_ids))
         
         # 是否配置密码筛选（账号和密码都配置了才算已配置）
         if has_password is not None:
@@ -250,7 +264,7 @@ class AccountService:
         Returns:
             账号对象，如果不存在则返回 None
         """
-        # 先按 account_id 精确查询（走 idx_account_id 索引），避免 OR 导致索引失效
+        # 先按 account_id 精确查询（account_id 全局唯一，走 uk_account_id 索引），避免 OR 导致索引失效
         stmt = select(XYAccount).where(XYAccount.account_id == account_identifier)
         if owner_id is not None:
             stmt = stmt.where(XYAccount.owner_id == owner_id)
@@ -282,6 +296,22 @@ class AccountService:
         result = await self.session.execute(stmt)
         return result.scalars().first()
 
+    async def account_id_exists(self, account_id: str, exclude_pk: int | None = None) -> bool:
+        """检查 account_id 是否已存在（全局，不区分所属用户）
+
+        Args:
+            account_id: 待校验的账号ID
+            exclude_pk: 需排除的账号主键（用于更新场景，排除自身）
+
+        Returns:
+            True 表示已存在，False 表示不存在
+        """
+        stmt = select(func.count(XYAccount.id)).where(XYAccount.account_id == account_id)
+        if exclude_pk is not None:
+            stmt = stmt.where(XYAccount.id != exclude_pk)
+        result = await self.session.execute(stmt)
+        return (result.scalar() or 0) > 0
+
     async def create_account(
         self,
         owner_id: int,
@@ -291,9 +321,9 @@ class AccountService:
         unb: str | None = None,
         login_method: str = "manual",
     ) -> XYAccount:
-        existing = await self.get_account_for_user(owner_id, account_id)
-        if existing:
-            raise ValueError("账户已存在")
+        # 全局唯一校验：account_id 不允许与任何用户的账号重复
+        if await self.account_id_exists(account_id):
+            raise ValueError("账号ID已存在")
 
         await AccountLimitService(self.session).ensure_can_add_account(owner_id)
 
@@ -403,8 +433,9 @@ class AccountService:
         return result.scalars().first()
 
     async def _generate_unique_account_id(self, owner_id: int, base: str) -> str:
+        # 全局唯一：account_id 在整个系统内不允许重复，生成候选时不区分 owner_id
         normalized = base or f"qr_{int(datetime.utcnow().timestamp())}"
-        stmt = select(XYAccount.account_id).where(XYAccount.owner_id == owner_id)
+        stmt = select(XYAccount.account_id)
         result = await self.session.execute(stmt)
         existing_ids = set(result.scalars().all())
         candidate = normalized

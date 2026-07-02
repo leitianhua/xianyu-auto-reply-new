@@ -337,9 +337,67 @@ export const updateProxySettings = async (settings?: Partial<SystemSettings> | n
   return { success: true, message: '代理设置已保存' }
 }
 
+// ========== 分销设置（独立保存） ==========
+
+// 独立保存分销设置：只提交 distribution.* 相关键，不触碰其他设置
+// 与页面右上角"保存设置"按钮分离，避免影响其他未改动的设置
+export const updateDistributionSettings = async (settings?: Partial<SystemSettings> | null): Promise<ApiResponse> => {
+  const feeType = settings?.['distribution.fee_type']
+  const feeRate = settings?.['distribution.fee_rate']
+
+  const payload: Record<string, string> = {
+    'distribution.fee_type': typeof feeType === 'string' && feeType ? feeType : 'fixed',
+    'distribution.fee_rate': typeof feeRate === 'string' ? feeRate : '',
+  }
+
+  for (const [key, value] of Object.entries(payload)) {
+    try {
+      const result = await put<ApiResponse>(`${SYSTEM_SETTINGS_PREFIX}/${key}`, { value })
+      if (!result?.success) {
+        return result || { success: false, message: '分销设置保存失败' }
+      }
+    } catch (error) {
+      return { success: false, message: (error as Error)?.message || '分销设置保存失败' }
+    }
+  }
+
+  return { success: true, message: '分销设置已保存' }
+}
+
 // 修改密码
 export const changePassword = async (data: { current_password: string; new_password: string }): Promise<ApiResponse> => {
   return post(`${USERS_PREFIX}/change-password`, data)
+}
+
+// 获取当前登录用户信息（含到期日）
+export interface CurrentUserProfile {
+  id: number
+  username: string
+  email?: string
+  phone?: string
+  role?: string
+  status?: string
+  account_limit?: number | null
+  last_login_at?: string | null
+  expire_at?: string | null
+}
+
+export const getCurrentUserProfile = async (): Promise<CurrentUserProfile> => {
+  return get(`${USERS_PREFIX}/me`)
+}
+
+// 账户续期：按系统设置的续期单价扣减余额并延长到期日
+export interface RenewMembershipResult {
+  months: number
+  unit_price: string
+  total: string
+  balance_before: string
+  balance_after: string
+  expire_at: string | null
+}
+
+export const renewMembership = async (months: number): Promise<ApiResponse<RenewMembershipResult>> => {
+  return post(`${USERS_PREFIX}/renew`, { months })
 }
 
 // 获取备份文件列表（管理员）
@@ -388,6 +446,11 @@ export const getUserSetting = async (key: string): Promise<{ success: boolean; v
 // 更新用户设置
 export const updateUserSetting = async (key: string, value: string, description?: string): Promise<ApiResponse> => {
   return put(`/api/v1/user-settings/${key}`, { value, description })
+}
+
+// 一键创建对接卡密秘钥（后端调用外部密钥服务创建并自动保存到当前用户）
+export const createCardSecretKey = async (): Promise<ApiResponse<{ key_value: string }>> => {
+  return post('/api/v1/user-settings/card-secret-key/create')
 }
 
 // 上传收款码
