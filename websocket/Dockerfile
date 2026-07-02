@@ -1,7 +1,7 @@
 # WebSocket 服务 Dockerfile
-# 单阶段构建，直接使用Python源码
+# 优化版：依赖在启动时动态安装，代码映射后重启即可生效
 
-# 基础镜像走 docker.io 官方名（由 buildx 的 buildkitd 镜像加速配置拉取，见流水线 BUILDKIT 配置）
+# 基础镜像
 FROM python:3.11-slim
 
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
@@ -13,27 +13,26 @@ RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y curl ca-certificates gcc \
+# 安装基础工具（构建时一次性安装）
+RUN apt-get update && apt-get install -y \
+    curl \
+    ca-certificates \
+    gcc \
+    bash \
     && update-ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# 复制项目源码
-COPY common /app/common
-COPY websocket /app/websocket
-COPY launcher /app/launcher
+# 预安装 Playwright 浏览器（这个很慢，构建时安装）
+# 注意：如果需要更新 Playwright 版本，需要重新构建镜像
+RUN pip install playwright && \
+    python -m playwright install --with-deps chromium
 
-# 从pyproject.toml提取并安装依赖
-RUN python -c "\
-import tomllib; \
-deps = tomllib.load(open('/app/websocket/pyproject.toml','rb')).get('project',{}).get('dependencies',[]); \
-open('/tmp/requirements.txt','w').write('\n'.join(deps))" && \
-    pip install --no-cache-dir -r /tmp/requirements.txt
-
-# 安装Playwright浏览器（--with-deps 自动安装系统依赖）
-RUN python -m playwright install --with-deps chromium
-
-# 创建日志目录
+# 创建目录结构
 RUN mkdir -p /app/websocket/logs /app/static /app/browser_data
+
+# 复制启动脚本（构建时复制，但映射后会使用映射的版本）
+COPY websocket/start.sh /app/start.sh
+RUN chmod +x /app/start.sh
 
 # 暴露端口
 EXPOSE 8090
@@ -42,5 +41,5 @@ ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app
 ENV TZ=Asia/Shanghai
 
-# 启动服务
-CMD ["python", "websocket/main.py"]
+# 使用启动脚本（依赖在启动时动态安装）
+CMD ["bash", "/app/start.sh"]

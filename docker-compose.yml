@@ -169,6 +169,8 @@ services:
       - ./common:/app/common
       - ./launcher:/app/launcher
       - ./websocket:/app/websocket
+      # 启动脚本映射（依赖动态安装）
+      - ./websocket/start.sh:/app/start.sh:ro
       # 数据持久化
       - websocket_logs:/app/websocket/logs
       - static-files:/app/static
