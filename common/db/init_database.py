@@ -1301,7 +1301,8 @@ class DatabaseInitializer:
                 INDEX idx_arml_status_created (process_status, created_at),
                 INDEX idx_arml_status_strategy_created (process_status, reply_strategy, created_at),
                 INDEX idx_arml_strategy_created (reply_strategy, created_at),
-                INDEX idx_arml_order_strategy_id (order_no, reply_strategy, id)
+                INDEX idx_arml_order_strategy_id (order_no, reply_strategy, id),
+                INDEX idx_arml_strategy_order_id (reply_strategy, order_no, id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='自动回复消息日志表';
         """,
 
@@ -1712,7 +1713,7 @@ class DatabaseInitializer:
             ("ai_reply_block_ordered_users", "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '已下单用户禁止AI回复'", "delivery_disabled_excluded_items"),
             ("refund_cancel_enabled", "TINYINT(1) NOT NULL DEFAULT 0 COMMENT '退款订单注销开关'", "ai_reply_block_ordered_users"),
             ("refund_cancel_url", "VARCHAR(255) DEFAULT NULL COMMENT '退款订单注销请求URL'", "refund_cancel_enabled"),
-            ("refund_cancel_timeout", "INT DEFAULT 30 COMMENT '退款订单注销超时时间(秒)'", "refund_cancel_url"),
+            ("refund_cancel_timeout", "INT DEFAULT 60 COMMENT '退款订单注销超时时间(秒)'", "refund_cancel_url"),
         ],
         "xy_orders": [
             ("is_bargain", "TINYINT(1) DEFAULT 0 COMMENT '是否小刀'", "account_name"),
@@ -2869,6 +2870,25 @@ class DatabaseInitializer:
                         logger.info("✓ xy_auto_reply_message_logs: 创建 idx_arml_order_strategy_id 复合索引")
                 except Exception as e:
                     logger.warning(f"✗ xy_auto_reply_message_logs idx_arml_order_strategy_id 创建失败: {e}")
+
+                # 补建 (reply_strategy, order_no, id) 复合索引 —— 加速订单列表「发送状态」筛选
+                # （子查询 WHERE reply_strategy='auto_delivery' GROUP BY order_no, MAX(id)，无 order_no 限定；
+                #  reply_strategy 最左直接定位、order_no 有序分组、id 覆盖，避免百万级日志表全索引扫描）
+                try:
+                    check = text("""
+                        SELECT COUNT(*) FROM information_schema.STATISTICS
+                        WHERE TABLE_SCHEMA = DATABASE()
+                        AND TABLE_NAME = 'xy_auto_reply_message_logs'
+                        AND INDEX_NAME = 'idx_arml_strategy_order_id'
+                    """)
+                    result = await conn.execute(check)
+                    if result.scalar() == 0:
+                        await conn.execute(text(
+                            "ALTER TABLE xy_auto_reply_message_logs ADD INDEX idx_arml_strategy_order_id (reply_strategy, order_no, id)"
+                        ))
+                        logger.info("✓ xy_auto_reply_message_logs: 创建 idx_arml_strategy_order_id 复合索引")
+                except Exception as e:
+                    logger.warning(f"✗ xy_auto_reply_message_logs idx_arml_strategy_order_id 创建失败: {e}")
 
             # 为 xy_dock_records 补建 (source_user_id, level) 复合索引 —— 加速二级分销商列表查询
             try:

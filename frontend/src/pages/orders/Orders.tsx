@@ -123,12 +123,18 @@ export function Orders() {
   })
   const [columnSettingsOpen, setColumnSettingsOpen] = useState(false)
 
-  const loadOrders = async (page: number = currentPage, size: number = pageSize, currentFilters: OrderFilterParams = filters) => {
+  const loadOrders = async (
+    page: number = currentPage,
+    size: number = pageSize,
+    currentFilters: OrderFilterParams = filters,
+    account: string = selectedAccount,
+    status: string = selectedStatus,
+  ) => {
     if (!_hasHydrated || !isAuthenticated || !token) return
     try {
       setOrdersLoading(true)
       setSelectedOrderIds(new Set())
-      const result = await getOrders(selectedAccount || undefined, selectedStatus || undefined, page, size, currentFilters)
+      const result = await getOrders(account || undefined, status || undefined, page, size, currentFilters)
       if (result.success) {
         setOrders(result.data || [])
         setTotal(result.total || 0)
@@ -149,11 +155,15 @@ export function Orders() {
     loadOrders(1, newPageSize, filters)
   }
   
-  // 筛选条件变更
+  // 筛选条件变更：仅更新草稿状态，不立即加载（改由「查询」按钮 / 回车触发）
   const handleFilterChange = (key: keyof OrderFilterParams, value: string | boolean | null) => {
     const newFilters = { ...filters, [key]: value }
     setFilters(newFilters)
-    loadOrders(1, pageSize, newFilters)
+  }
+
+  // 点击「查询」：带当前全部条件（账号/状态/各筛选值）回第 1 页
+  const handleSearch = () => {
+    loadOrders(1, pageSize, filters)
   }
   
   // 重置筛选条件
@@ -168,12 +178,10 @@ export function Orders() {
       delivery_send_status: null,
     }
     setFilters(emptyFilters)
-    const hasAccountOrStatusFilter = Boolean(selectedAccount || selectedStatus)
     setSelectedAccount('')
     setSelectedStatus('')
-    if (!hasAccountOrStatusFilter) {
-      loadOrders(1, pageSize, emptyFilters)
-    }
+    // 显式传入已清空的账号/状态，避免 setState 异步导致读到旧值
+    loadOrders(1, pageSize, emptyFilters, '', '')
   }
   
   // 检查是否有筛选条件
@@ -209,17 +217,12 @@ export function Orders() {
 
   const visibleColumns = columns.filter(col => col.visible)
 
+  // 首次挂载（登录态就绪后）加载账号与订单，各筛选条件改由「查询」按钮 / 回车触发
   useEffect(() => {
     if (!_hasHydrated || !isAuthenticated || !token) return
     loadAccounts()
     loadOrders(1, pageSize, filters)
   }, [_hasHydrated, isAuthenticated, token])
-
-  useEffect(() => {
-    if (!_hasHydrated || !isAuthenticated || !token) return
-    setCurrentPage(1)
-    loadOrders(1, pageSize, filters)
-  }, [_hasHydrated, isAuthenticated, token, selectedAccount, selectedStatus])
 
   const handleDelete = async (id: string) => {
     setDeleting(true)
@@ -279,6 +282,11 @@ export function Orders() {
   }
 
   const handleFetchXianyuOrders = async () => {
+    // 未选择账号时给出提示，不再默认禁用按钮
+    if (!selectedAccount) {
+      addToast({ type: 'warning', message: '请先选择账号' })
+      return
+    }
     setFetchingXianyuOrders(true)
     try {
       const result = await fetchXianyuOrders(selectedAccount || undefined)
@@ -345,14 +353,6 @@ export function Orders() {
     }
   }
 
-  // 搜索防抖
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      loadOrders(1, pageSize, filters)
-    }, 300)
-    return () => clearTimeout(timer)
-  }, [filters.search])
-
   if (loading) {
     return <PageLoading />
   }
@@ -366,7 +366,7 @@ export function Orders() {
           <p className="page-description">查看和管理所有订单信息</p>
         </div>
         <div className="flex flex-col sm:flex-row gap-3 w-full sm:w-auto">
-          <button onClick={handleFetchXianyuOrders} disabled={fetchingXianyuOrders || !selectedAccount} className="btn-ios-primary w-full sm:w-auto" title={!selectedAccount ? '请先选择账号' : '只能获取近3个月内的订单'}>
+          <button onClick={handleFetchXianyuOrders} disabled={fetchingXianyuOrders} className="btn-ios-primary w-full sm:w-auto" title="只能获取近3个月内的订单">
             {fetchingXianyuOrders ? (
               <Loader2 className="w-4 h-4 animate-spin" />
             ) : (
@@ -567,11 +567,22 @@ export function Orders() {
                     type="text"
                     value={filters.search || ''}
                     onChange={(e) => setFilters(prev => ({ ...prev, search: e.target.value || null }))}
+                    onKeyDown={(e) => { if (e.key === 'Enter') handleSearch() }}
                     placeholder="搜索订单ID或商品ID..."
                     className="input-ios pl-9"
                   />
                 </div>
               </div>
+            </div>
+            {/* 筛选操作按钮：查询 / 重置，靠右对齐 */}
+            <div className="mt-3 flex justify-end gap-2">
+              <button onClick={handleSearch} disabled={ordersLoading} className="btn-ios-primary btn-sm">
+                {ordersLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+                查询
+              </button>
+              <button onClick={handleResetFilters} className="btn-ios-secondary btn-sm text-red-500">
+                重置
+              </button>
             </div>
           </div>
         )}
