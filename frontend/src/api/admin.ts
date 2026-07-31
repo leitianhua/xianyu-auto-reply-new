@@ -150,7 +150,16 @@ export const testRemoteSliderSolve = async (
 }
 
 // 读取远程过滑块全局配置（仅管理员）
-export const getRemoteCaptchaConfig = async (): Promise<ApiResponse<{ url: string; secret_key: string; pass_cookies: boolean; local_weight: number; remote_weight: number }>> => {
+export const getRemoteCaptchaConfig = async (): Promise<ApiResponse<{
+  url: string
+  secret_key: string
+  pass_cookies: boolean
+  block_remote_calls: boolean
+  local_weight: number
+  remote_weight: number
+  remote_processing_max: number
+  remote_cooldown_seconds: number
+}>> => {
   return get(`${API_PREFIX}/captcha/remote-config`)
 }
 
@@ -160,10 +169,22 @@ export const saveRemoteCaptchaConfig = async (
   url: string,
   secret_key: string,
   pass_cookies: boolean,
+  block_remote_calls: boolean,
   local_weight: number,
   remote_weight: number,
+  remote_processing_max: number,
+  remote_cooldown_seconds: number,
 ): Promise<ApiResponse> => {
-  return put(`${API_PREFIX}/captcha/remote-config`, { url, secret_key, pass_cookies, local_weight, remote_weight })
+  return put(`${API_PREFIX}/captcha/remote-config`, {
+    url,
+    secret_key,
+    pass_cookies,
+    block_remote_calls,
+    local_weight,
+    remote_weight,
+    remote_processing_max,
+    remote_cooldown_seconds,
+  })
 }
 
 // ========== 风控日志 ==========
@@ -184,7 +205,7 @@ export interface RiskLog {
 }
 
 // 获取风控日志
-export const getRiskLogs = async (params?: { 
+export const getRiskLogs = async (params?: {
   page?: number
   pageSize?: number
   cookie_id?: string
@@ -192,6 +213,7 @@ export const getRiskLogs = async (params?: {
   end_date?: string
   processing_status?: string
   call_type?: string
+  call_user?: string
 }): Promise<{ success: boolean; data?: RiskLog[]; total?: number; message?: string }> => {
   const query = new URLSearchParams()
   const page = params?.page || 1
@@ -204,6 +226,7 @@ export const getRiskLogs = async (params?: {
   if (params?.end_date) query.set('end_date', params.end_date)
   if (params?.processing_status) query.set('processing_status', params.processing_status)
   if (params?.call_type) query.set('call_type', params.call_type)
+  if (params?.call_user) query.set('call_user', params.call_user)
   const result = await get<{ success: boolean; message?: string; data?: Array<{
     id: number
     cookie_id: string
@@ -237,10 +260,29 @@ export const getRiskLogs = async (params?: {
   return { success: Boolean(result.success), data: logs, total: result.total, message: result.message }
 }
 
+export interface LocalSliderConfig {
+  enabled: boolean
+}
+
+// 读取“本机滑块不处理”开关（仅管理员）
+export const getLocalSliderConfig = async (): Promise<ApiResponse<LocalSliderConfig>> => {
+  return get(`${API_PREFIX}/risk-control-logs/local-slider-config`)
+}
+
+// 实时更新“本机滑块不处理”开关（仅管理员）
+export const updateLocalSliderConfig = async (enabled: boolean): Promise<ApiResponse<LocalSliderConfig>> => {
+  return put(`${API_PREFIX}/risk-control-logs/local-slider-config`, { enabled })
+}
+
 // 清空风控日志
 export const clearRiskLogs = async (cookieId?: string): Promise<ApiResponse> => {
   const query = cookieId ? `?cookie_id=${cookieId}` : ''
   return del(`${ADMIN_PREFIX}/risk-control-logs${query}`)
+}
+
+// 清空处理中的风控日志（仅删除 processing_status=processing 的记录）
+export const clearProcessingRiskLogs = async (): Promise<ApiResponse> => {
+  return del(`${ADMIN_PREFIX}/risk-control-logs?processing_status=processing`)
 }
 
 // 当日风控成功率（含总体 / 本机 / 远程三个维度）
@@ -256,6 +298,8 @@ export interface RiskTodaySuccessRate {
   remote_success: number
   remote_rate: number
   processing: number
+  local_processing: number
+  remote_processing: number
 }
 
 // 获取当日风控成功率（当日成功记录数 / 当日总记录数）

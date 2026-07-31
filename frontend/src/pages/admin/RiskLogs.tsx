@@ -6,12 +6,13 @@
  * 2. 支持按账号筛选
  * 3. 支持按时间范围筛选
  * 4. 支持按处理状态筛选
- * 5. 支持分页
- * 6. 支持清空日志
+ * 5. 支持按调用类型、调用用户筛选
+ * 6. 支持分页
+ * 7. 支持清空日志
  */
 import { useState, useEffect } from 'react'
-import { ShieldAlert, RefreshCw, Trash2, ChevronLeft, ChevronRight, Loader2, Calendar, Info, TrendingUp } from 'lucide-react'
-import { getRiskLogs, clearRiskLogs, testRemoteSliderSolve, getRemoteCaptchaConfig, saveRemoteCaptchaConfig, getRiskTodaySuccessRate, type RiskLog, type RiskTodaySuccessRate } from '@/api/admin'
+import { ShieldAlert, RefreshCw, Trash2, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Loader2, Calendar, Info, TrendingUp, Settings } from 'lucide-react'
+import { getRiskLogs, clearRiskLogs, clearProcessingRiskLogs, testRemoteSliderSolve, getRemoteCaptchaConfig, saveRemoteCaptchaConfig, getRiskTodaySuccessRate, getLocalSliderConfig, updateLocalSliderConfig, type RiskLog, type RiskTodaySuccessRate } from '@/api/admin'
 import { getAccountDetails } from '@/api/accounts'
 import { useUIStore } from '@/store/uiStore'
 import { useAuthStore } from '@/store/authStore'
@@ -19,7 +20,17 @@ import { PageLoading } from '@/components/common/Loading'
 import { Select } from '@/components/common/Select'
 import { ConfirmModal } from '@/components/common/ConfirmModal'
 import { getApiErrorMessage } from '@/utils/request'
+import { getBeijingDateInputValue } from '@/utils/date'
 import type { Account } from '@/types'
+
+// Token获取方式专用域名：这些是取Token的远程接口地址，不是过滑块远程服务，禁止填到本页保存
+const TOKEN_API_ONLY_DOMAINS = ['api.xianyusite.shop', 'api.zhinianblog.cn']
+
+/** 返回远程服务URL中命中的Token接口域名，未命中返回空字符串 */
+const findTokenApiDomain = (url: string): string => {
+  const lowered = url.trim().toLowerCase()
+  return TOKEN_API_ONLY_DOMAINS.find((domain) => lowered.includes(domain)) || ''
+}
 
 export function RiskLogs() {
   const { addToast } = useUIStore()
@@ -30,7 +41,7 @@ export function RiskLogs() {
   const [selectedAccount, setSelectedAccount] = useState('')
 
   // 时间筛选 - 默认当天
-  const today = new Date().toISOString().split('T')[0]
+  const today = getBeijingDateInputValue()
   const [startDate, setStartDate] = useState(today)
   const [endDate, setEndDate] = useState(today)
 
@@ -39,6 +50,9 @@ export function RiskLogs() {
 
   // 调用类型筛选（''-全部 / local-本机 / remote-远程）
   const [selectedCallType, setSelectedCallType] = useState('')
+
+  // 调用用户筛选（模糊匹配，仅远程调用记录该字段）
+  const [callUserKeyword, setCallUserKeyword] = useState('')
 
   // 分页状态
   const [currentPage, setCurrentPage] = useState(1)
@@ -52,15 +66,37 @@ export function RiskLogs() {
   const [clearConfirm, setClearConfirm] = useState(false)
   const [clearing, setClearing] = useState(false)
 
-  // 远程过滑块配置（与个人设置一致，按用户存储于 user-settings）
+  // 清空处理中日志确认弹窗状态
+  const [clearProcessingConfirm, setClearProcessingConfirm] = useState(false)
+  const [clearingProcessing, setClearingProcessing] = useState(false)
+
+  // 远程过滑块全局配置（仅管理员可见，存储于 system_settings）
   const [remoteUrl, setRemoteUrl] = useState('')
   const [remoteSecret, setRemoteSecret] = useState('')
   const [passCookies, setPassCookies] = useState(false)
+  const [blockRemoteCalls, setBlockRemoteCalls] = useState(true)
   // real_mouse 过滑块本地/远程排队权重（字符串便于输入框编辑，保存时规整为非负数），默认 1
   const [localWeight, setLocalWeight] = useState('1')
   const [remoteWeight, setRemoteWeight] = useState('1')
+  const [remoteProcessingMax, setRemoteProcessingMax] = useState('20')
+  const [remoteCooldownSeconds, setRemoteCooldownSeconds] = useState('600')
   const [savingConfig, setSavingConfig] = useState(false)
   const [testing, setTesting] = useState(false)
+  const [localSliderDisabled, setLocalSliderDisabled] = useState(false)
+  const [localSliderConfigLoading, setLocalSliderConfigLoading] = useState(true)
+  const [savingLocalSliderConfig, setSavingLocalSliderConfig] = useState(false)
+  // 配置卡片折叠状态（默认收起，减少页面纵向占用；标题行保留常用的"本机滑块不处理"开关）
+  const [configExpanded, setConfigExpanded] = useState(false)
+
+  const getCallTypeLabel = (callType?: string | null) => (callType === 'remote' ? '远程' : '本机')
+
+  const getProcessingStatusLabel = (log: RiskLog) => {
+    if (log.processing_status === 'success') return '成功'
+    if (log.processing_status === 'failed') return '失败'
+    if (log.processing_status === 'processing') return `处理中（${getCallTypeLabel(log.call_type)}）`
+    if (log.processing_status === 'cancelled') return '已取消'
+    return log.processing_status || '-'
+  }
 
   const loadLogs = async (nextPage: number = currentPage, nextPageSize: number = pageSize) => {
     if (!_hasHydrated || !isAuthenticated || !token) return
@@ -74,6 +110,7 @@ export function RiskLogs() {
         end_date: endDate || undefined,
         processing_status: selectedStatus || undefined,
         call_type: selectedCallType || undefined,
+        call_user: callUserKeyword.trim() || undefined,
       })
       if (result.success) {
         setLogs(result.data || [])
@@ -117,28 +154,115 @@ export function RiskLogs() {
         setRemoteUrl(res.data.url || '')
         setRemoteSecret(res.data.secret_key || '')
         setPassCookies(!!res.data.pass_cookies)
+        setBlockRemoteCalls(res.data.block_remote_calls ?? true)
         setLocalWeight(String(res.data.local_weight ?? 1))
         setRemoteWeight(String(res.data.remote_weight ?? 1))
+        setRemoteProcessingMax(String(res.data.remote_processing_max ?? 20))
+        setRemoteCooldownSeconds(String(res.data.remote_cooldown_seconds ?? 600))
+      } else {
+        addToast({ type: 'error', message: res.message || '加载远程过滑块配置失败' })
       }
-    } catch {
-      // 回显失败不阻断页面
+    } catch (error) {
+      addToast({ type: 'error', message: getApiErrorMessage(error, '加载远程过滑块配置失败') })
     }
   }
 
+  // 本机滑块处理开关独立加载、独立保存，点击后立即写入系统设置。
+  const loadLocalSliderConfig = async () => {
+    if (!_hasHydrated || !isAuthenticated || !token || !user?.is_admin) {
+      // 非管理员或未就绪时复位加载态，避免开关一直停留在转圈禁用状态
+      setLocalSliderConfigLoading(false)
+      return
+    }
+    try {
+      setLocalSliderConfigLoading(true)
+      const res = await getLocalSliderConfig()
+      if (res.success && res.data) {
+        setLocalSliderDisabled(Boolean(res.data.enabled))
+      } else {
+        addToast({ type: 'error', message: res.message || '加载本机滑块处理开关失败' })
+      }
+    } catch (error) {
+      addToast({ type: 'error', message: getApiErrorMessage(error, '加载本机滑块处理开关失败') })
+    } finally {
+      setLocalSliderConfigLoading(false)
+    }
+  }
+
+  const handleLocalSliderConfigChange = async () => {
+    const nextEnabled = !localSliderDisabled
+    try {
+      setSavingLocalSliderConfig(true)
+      const res = await updateLocalSliderConfig(nextEnabled)
+      if (res.success) {
+        setLocalSliderDisabled(res.data?.enabled ?? nextEnabled)
+        addToast({
+          type: 'success',
+          message: res.message || (nextEnabled ? '本机滑块不处理已开启' : '本机滑块不处理已关闭'),
+        })
+      } else {
+        addToast({ type: 'error', message: res.message || '更新本机滑块处理开关失败' })
+      }
+    } catch (error) {
+      addToast({ type: 'error', message: getApiErrorMessage(error, '更新本机滑块处理开关失败') })
+    } finally {
+      setSavingLocalSliderConfig(false)
+    }
+  }
+
+  /**
+   * 校验远程服务URL是否误填了Token获取接口域名，命中则提示并返回 true（保存/测试共用）
+   */
+  const rejectTokenApiUrl = (url: string): boolean => {
+    const tokenApiDomain = findTokenApiDomain(url)
+    if (!tokenApiDomain) return false
+    addToast({
+      type: 'error',
+      message: `该URL（${tokenApiDomain}）不是在此处填写，需要在「系统设置-Token获取方式」中填写`,
+    })
+    return true
+  }
+
   const handleSaveRemoteConfig = async () => {
+    // 先拦截误填的Token接口域名，避免把取Token地址存成过滑块服务地址
+    if (rejectTokenApiUrl(remoteUrl)) return
+
+    const parseNonnegativeInteger = (value: string, label: string) => {
+      const normalized = value.trim()
+      if (!/^\d+$/.test(normalized)) {
+        addToast({ type: 'error', message: `${label}必须是大于或等于 0 的整数` })
+        return null
+      }
+      const parsed = Number(normalized)
+      if (!Number.isSafeInteger(parsed)) {
+        addToast({ type: 'error', message: `${label}数值过大，请输入有效整数` })
+        return null
+      }
+      return parsed
+    }
+    const processingMax = parseNonnegativeInteger(remoteProcessingMax, '远程处理中最大条数')
+    if (processingMax === null) return
+    const cooldownSeconds = parseNonnegativeInteger(remoteCooldownSeconds, '远程调用冷却时间')
+    if (cooldownSeconds === null) return
+
     try {
       setSavingConfig(true)
       // 权重规整：空串/非法回退 1，负数回退 1（与后端 _sanitize_weight 口径一致）
       const normWeight = (v: string) => {
-        const n = Number(v)
+        const normalized = v.trim()
+        if (!normalized) return 1
+        const n = Number(normalized)
         return Number.isFinite(n) && n >= 0 ? n : 1
       }
       const res = await saveRemoteCaptchaConfig(
         remoteUrl.trim(),
         remoteSecret.trim(),
         passCookies,
+        blockRemoteCalls,
         normWeight(localWeight),
         normWeight(remoteWeight),
+        processingMax,
+        cooldownSeconds,
       )
       if (res.success) {
         addToast({ type: 'success', message: '远程过滑块配置已保存' })
@@ -158,6 +282,8 @@ export function RiskLogs() {
       addToast({ type: 'error', message: '请先填写远程服务URL' })
       return
     }
+    // 误填Token获取接口域名时不发起测试请求
+    if (rejectTokenApiUrl(url)) return
     try {
       setTesting(true)
       const res = await testRemoteSliderSolve(url, remoteSecret.trim())
@@ -186,6 +312,11 @@ export function RiskLogs() {
     loadTodayRate()
     loadRemoteConfig()
   }, [_hasHydrated, isAuthenticated, token])
+
+  // 本机滑块开关依赖管理员身份，user 水合可能晚于 token，需单独监听
+  useEffect(() => {
+    loadLocalSliderConfig()
+  }, [_hasHydrated, isAuthenticated, token, user?.is_admin])
 
   // 查询按钮点击
   const handleSearch = () => {
@@ -219,6 +350,26 @@ export function RiskLogs() {
     }
   }
 
+  // 清空所有处理中的风控日志（含卡死未收尾的记录，释放远程处理中容量限制）
+  const handleClearProcessing = async () => {
+    setClearingProcessing(true)
+    try {
+      const res = await clearProcessingRiskLogs()
+      if (res.success) {
+        addToast({ type: 'success', message: res.message || '处理中日志已清空' })
+        setClearProcessingConfirm(false)
+        loadLogs(1, pageSize)
+        loadTodayRate()
+      } else {
+        addToast({ type: 'error', message: res.message || '清空处理中日志失败' })
+      }
+    } catch (error) {
+      addToast({ type: 'error', message: getApiErrorMessage(error, '清空处理中日志失败') })
+    } finally {
+      setClearingProcessing(false)
+    }
+  }
+
   // 分页计算
   const totalPages = Math.ceil(total / pageSize)
   const startIndex = (currentPage - 1) * pageSize + 1
@@ -230,16 +381,71 @@ export function RiskLogs() {
 
   return (
     <div className="space-y-4">
-      {/* 远程过滑块配置（仅管理员可见可操作；按用户保存/回显，存储逻辑与个人设置一致） */}
+      {/* 顶部红字提示：滑块验证无法通过或账号持续离线时，引导用户改用远程接口取 Token */}
+      <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 dark:border-red-500/30 dark:bg-red-500/10">
+        <p className="text-sm font-medium text-red-600 dark:text-red-400">
+          如遇滑块验证无法通过或者账号管理在线状态一直离线的场景，可到「系统设置 - 基础设置 - Token获取方式」，调整为远程接口。
+        </p>
+      </div>
+
+      {/* 远程过滑块全局配置（仅管理员可见可操作） */}
       {user?.is_admin && (
       <div className="vben-card">
-        <div className="vben-card-body">
+        <div className="vben-card-body !py-3">
+          {/* 标题行：左侧折叠入口，右侧保留最常用的"本机滑块不处理"开关（收起时也可直接操作） */}
+          <div className="flex flex-wrap items-center gap-4">
+            <button
+              type="button"
+              onClick={() => setConfigExpanded((v) => !v)}
+              aria-expanded={configExpanded}
+              className="flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-200 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
+            >
+              <Settings className="w-4 h-4 text-blue-500 dark:text-blue-400" />
+              远程过滑块配置
+              {configExpanded ? (
+                <ChevronUp className="w-4 h-4 text-slate-400 dark:text-slate-500" />
+              ) : (
+                <ChevronDown className="w-4 h-4 text-slate-400 dark:text-slate-500" />
+              )}
+              <span className="text-xs font-normal text-slate-400 dark:text-slate-500">
+                {configExpanded ? '收起' : '展开'}
+              </span>
+            </button>
+            <div className="ml-auto flex items-center gap-3">
+              <span className="text-sm font-medium text-slate-700 dark:text-slate-200">本机滑块不处理</span>
+              <button
+                type="button"
+                onClick={handleLocalSliderConfigChange}
+              disabled={localSliderConfigLoading || savingLocalSliderConfig}
+              role="switch"
+              aria-label="本机滑块不处理"
+              aria-checked={localSliderDisabled}
+              className={`relative inline-flex h-5 w-10 shrink-0 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+                localSliderDisabled ? 'bg-blue-500' : 'bg-gray-300 dark:bg-slate-600'
+              }`}
+            >
+              {localSliderConfigLoading || savingLocalSliderConfig ? (
+                <Loader2 className="absolute left-3.5 h-3 w-3 animate-spin text-white" />
+              ) : (
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                    localSliderDisabled ? 'translate-x-5' : 'translate-x-0.5'
+                  }`}
+                />
+              )}
+              </button>
+            </div>
+          </div>
+
+          {/* 展开后的详细配置（默认收起，减少页面纵向占用） */}
+          {configExpanded && (
+          <div className="mt-3 pt-3 border-t border-slate-100 dark:border-slate-700/60">
           {/* 配置说明提示条 */}
           <div className="flex items-start gap-2 mb-4 px-3 py-2.5 rounded-lg bg-blue-50 dark:bg-blue-500/10 border border-blue-100 dark:border-blue-500/20">
             <Info className="w-4 h-4 mt-0.5 shrink-0 text-blue-500 dark:text-blue-400" />
             <div className="text-xs leading-relaxed text-blue-700 dark:text-blue-300 space-y-0.5">
               <p>填写 <span className="font-medium">https://xy-api.zhinianboke.com/api/v1/captcha/slider-solve</span> 使用远程服务过滑块验证，提高成功率。</p>
-              <p>秘钥请在 <span className="font-medium">xy.zhinianboke.com</span> 注册账号后，于个人设置中获取。</p>
+              <p>秘钥请在 <span className="font-medium">xy.zhinianboke.com</span> 注册账号后，于个人设置中获取，测试返回[punish 链接不能为空]，代表成功。</p>
             </div>
           </div>
           <div className="flex flex-wrap items-end gap-4">
@@ -281,9 +487,11 @@ export function RiskLogs() {
             </button>
           </div>
 
+          {/* 两个说明型开关并排放置：宽屏一行两列、窄屏自动换行，压缩纵向占用 */}
+          <div className="mt-4 flex flex-wrap gap-x-8 gap-y-4">
           {/* 是否传递账号Cookie（默认关闭）：开启后调用远程接口时会把当前账号 Cookie 传给远程服务，
               远程端在验证链接过期时可凭 Cookie 自动重取新链接，提高成功率 */}
-          <div className="flex items-start gap-3 mt-4">
+          <div className="flex items-start gap-3 flex-1 min-w-[300px]">
             <button
               type="button"
               onClick={() => setPassCookies((v) => !v)}
@@ -307,10 +515,57 @@ export function RiskLogs() {
             </div>
           </div>
 
-          {/* real_mouse 本机/远程排队权重：本机开启真实鼠标引擎时，物理光标同一时刻只能解一个滑块，
-              本机自身任务与外部远程调用会排队。权重决定争抢时的放行比例（如 3:1），只在两边同时排队时生效。 */}
+          <div className="flex items-start gap-3 flex-1 min-w-[300px]">
+            <button
+              type="button"
+              onClick={() => setBlockRemoteCalls((v) => !v)}
+              role="switch"
+              aria-checked={blockRemoteCalls}
+              className={`relative inline-flex h-5 w-10 items-center rounded-full transition-colors shrink-0 mt-0.5 ${
+                blockRemoteCalls ? 'bg-red-500' : 'bg-gray-300 dark:bg-slate-600'
+              }`}
+            >
+              <span
+                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                  blockRemoteCalls ? 'translate-x-5' : 'translate-x-0.5'
+                }`}
+              />
+            </button>
+            <div className="text-sm">
+              <p className="font-medium text-slate-700 dark:text-slate-200">禁止远程调用本机过滑块接口</p>
+              <p className="mt-0.5 text-xs text-red-600 dark:text-red-400">
+                开启后，外部系统调用 backend-web 的 /captcha/slider-solve 接口会被直接拒绝；本机内部触发的过滑块不受影响。
+              </p>
+            </div>
+          </div>
+          </div>
+
+          {/* 数值参数合并为一行四项（窄屏自动换行），说明文字压缩到下方两行小字 */}
           <div className="mt-4 pt-4 border-t border-slate-100 dark:border-slate-700/60">
             <div className="flex flex-wrap items-end gap-4">
+              <div className="input-group w-44 max-w-full">
+                <label className="input-label">远程处理中最大条数</label>
+                <input
+                  type="number"
+                  min={0}
+                  step={1}
+                  value={remoteProcessingMax}
+                  onChange={(e) => setRemoteProcessingMax(e.target.value)}
+                  className="input-ios"
+                />
+              </div>
+              <div className="input-group w-44 max-w-full">
+                <label className="input-label">远程调用冷却时间（秒）</label>
+                <input
+                  type="number"
+                  min={0}
+                  step={1}
+                  value={remoteCooldownSeconds}
+                  onChange={(e) => setRemoteCooldownSeconds(e.target.value)}
+                  className="input-ios"
+                />
+              </div>
+              {/* real_mouse 本机/远程排队权重：物理光标同一时刻只解一个滑块，两边同时排队时按权重比例放行 */}
               <div className="input-group w-32">
                 <label className="input-label">本地排队权重</label>
                 <input
@@ -333,11 +588,14 @@ export function RiskLogs() {
                   className="input-ios"
                 />
               </div>
-              <p className="flex-1 min-w-[240px] text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
-                仅真实鼠标（real_mouse）过滑块引擎生效。物理光标同一时刻只解一个滑块，本地任务与外部远程调用同时排队时，按此比例放行（如 3:1 ≈ 每 4 个放 3 本地 1 远程）；一方空闲时另一方独占。默认 1:1。修改后随“保存”按钮一起生效。
-              </p>
+            </div>
+            <div className="mt-2 space-y-0.5 text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+              <p>处理中上限：默认最多允许 20 条处理中滑块日志，仅统计远程调用产生的记录（不含本机）；达到上限后拒绝远程请求，并默认冷却 600 秒，填写 0 可关闭对应限制。</p>
+              <p>排队权重：仅真实鼠标（real_mouse）引擎生效，本地任务与外部远程调用同时排队时按此比例放行（如 3:1 ≈ 每 4 个放 3 本地 1 远程），一方空闲时另一方独占，默认 1:1；修改后随“保存”按钮一起生效。</p>
             </div>
           </div>
+          </div>
+          )}
         </div>
       </div>
       )}
@@ -350,10 +608,16 @@ export function RiskLogs() {
         </div>
         <div className="flex gap-3">
           {user?.is_admin ? (
-            <button onClick={() => setClearConfirm(true)} className="btn-ios-danger ">
-              <Trash2 className="w-4 h-4" />
-              清空日志
-            </button>
+            <>
+              <button onClick={() => setClearProcessingConfirm(true)} className="btn-ios-secondary ">
+                <Trash2 className="w-4 h-4" />
+                清空处理中日志
+              </button>
+              <button onClick={() => setClearConfirm(true)} className="btn-ios-danger ">
+                <Trash2 className="w-4 h-4" />
+                清空日志
+              </button>
+            </>
           ) : null}
           <button onClick={() => { loadLogs(); loadTodayRate() }} disabled={loading} className="btn-ios-secondary ">
             {loading ? (
@@ -413,6 +677,17 @@ export function RiskLogs() {
                 <option value="local">本机</option>
                 <option value="remote">远程</option>
               </select>
+            </div>
+            <div className="input-group">
+              <label className="input-label">调用用户</label>
+              <input
+                type="text"
+                value={callUserKeyword}
+                onChange={(e) => setCallUserKeyword(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) handleSearch() }}
+                placeholder="模糊匹配，仅远程调用"
+                className="input-ios"
+              />
             </div>
             <div className="input-group min-w-[200px]">
               <label className="input-label">筛选账号</label>
@@ -478,9 +753,21 @@ export function RiskLogs() {
             </div>
             {/* 处理中（仅统计当日，未计入成功率分母） */}
             <div className="flex items-baseline gap-1.5">
-              <span className="text-sm text-slate-500 dark:text-slate-400">处理中</span>
+              <span className="text-sm text-slate-500 dark:text-slate-400">处理中总计</span>
               <span className="text-lg font-bold text-amber-600 dark:text-amber-400">
                 {todayRate?.processing ?? '-'}
+              </span>
+            </div>
+            <div className="flex items-baseline gap-1.5">
+              <span className="text-sm text-slate-500 dark:text-slate-400">本机处理中</span>
+              <span className="text-lg font-bold text-blue-600 dark:text-blue-400">
+                {todayRate?.local_processing ?? '-'}
+              </span>
+            </div>
+            <div className="flex items-baseline gap-1.5">
+              <span className="text-sm text-slate-500 dark:text-slate-400">远程处理中</span>
+              <span className="text-lg font-bold text-orange-600 dark:text-orange-400">
+                {todayRate?.remote_processing ?? '-'}
               </span>
             </div>
           </div>
@@ -503,6 +790,7 @@ export function RiskLogs() {
                 <th>账号ID</th>
                 <th>事件描述</th>
                 <th>处理结果</th>
+                <th>失败原因</th>
                 <th>处理状态</th>
                 <th>验证引擎</th>
                 <th>调用类型</th>
@@ -514,7 +802,7 @@ export function RiskLogs() {
             <tbody>
               {logs.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="text-center py-8 text-slate-500 dark:text-slate-400">
+                  <td colSpan={10} className="text-center py-8 text-slate-500 dark:text-slate-400">
                     <div className="flex flex-col items-center gap-2">
                       <ShieldAlert className="w-12 h-12 text-slate-300 dark:text-slate-600" />
                       <p>暂无风控日志</p>
@@ -546,6 +834,14 @@ export function RiskLogs() {
                         {log.processing_result || '-'}
                       </span>
                     </td>
+                    <td className="max-w-[200px] text-slate-500 dark:text-slate-400">
+                      <span
+                        className="block truncate cursor-help"
+                        title={log.error_message || ''}
+                      >
+                        {log.error_message || '-'}
+                      </span>
+                    </td>
                     <td>
                       <span className={`text-xs px-2 py-1 rounded ${
                         log.processing_status === 'success' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' :
@@ -553,11 +849,7 @@ export function RiskLogs() {
                         log.processing_status === 'processing' ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400' :
                         'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300'
                       }`}>
-                        {log.processing_status === 'success' ? '成功' :
-                         log.processing_status === 'failed' ? '失败' :
-                         log.processing_status === 'processing' ? '处理中' :
-                         log.processing_status === 'cancelled' ? '已取消' :
-                         log.processing_status || '-'}
+                        {getProcessingStatusLabel(log)}
                       </span>
                     </td>
                     <td>
@@ -663,6 +955,21 @@ export function RiskLogs() {
           loading={clearing}
           onConfirm={handleClear}
           onCancel={() => setClearConfirm(false)}
+        />
+      ) : null}
+
+      {/* 清空处理中日志确认弹窗 */}
+      {user?.is_admin ? (
+        <ConfirmModal
+          isOpen={clearProcessingConfirm}
+          title="清空处理中日志确认"
+          message="确定要清空所有处理中状态的风控日志吗？将删除数据库中全部处理中记录（含卡死未收尾的），此操作不可恢复！"
+          confirmText="清空"
+          cancelText="取消"
+          type="danger"
+          loading={clearingProcessing}
+          onConfirm={handleClearProcessing}
+          onCancel={() => setClearProcessingConfirm(false)}
         />
       ) : null}
     </div>

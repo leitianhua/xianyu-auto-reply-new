@@ -15,6 +15,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from common.models.system_setting import SystemSetting
+from common.services.remote_token_api import (
+    TOKEN_REMOTE_SECRET_KEY_SETTING_KEY,
+    TOKEN_REMOTE_URL_SETTING_KEY,
+)
+from common.services.token_api_mode import (
+    TOKEN_API_MODE_SETTING_KEY,
+    normalize_token_api_mode,
+)
 from common.utils.text_utils import escape_xss
 
 SENSITIVE_KEYS = {"admin_password_hash"}
@@ -65,8 +73,21 @@ DEFAULT_SYSTEM_SETTINGS: dict[str, tuple[str, str | None]] = {
     # real_mouse 过滑块本地/远程排队权重（默认 1:1，多来源同时排队时按比例放行）
     "captcha.real_mouse_weight_local": ("1", "real_mouse过滑块本地排队权重"),
     "captcha.real_mouse_weight_remote": ("1", "real_mouse过滑块远程排队权重"),
-    # 账号密码登录模式：auto-自动(具备协议能力走协议,否则浏览器) / protocol-强制协议 / browser-强制浏览器
-    "password_login.mode": ("auto", "账号密码登录模式：auto/protocol/browser"),
+    "captcha.block_remote_calls": ("true", "是否禁止外部远程调用backend-web过滑块接口"),
+    "captcha.local_slider_disabled": (
+        "false",
+        "本机是否停止处理滑块；缓存缺失时仍请求Token接口",
+    ),
+    "captcha.remote_processing_max": ("20", "远程调用允许的最大处理中滑块日志数，0=不限制"),
+    "captcha.remote_cooldown_seconds": ("600", "远程调用达到处理中上限后的冷却秒数，0=不冷却"),
+    "captcha.remote_cooldown_until": ("0", "远程过滑块调用冷却截止时间戳"),
+    "captcha.slider_mode": ("browser", "滑块滑动方式：browser/real_mouse"),
+    # 账号密码登录模式：protocol-协议登录 / browser-浏览器登录
+    "password_login.mode": ("browser", "账号密码登录模式：protocol/browser"),
+    # Token获取方式：web-网页接口 / remote-远程接口
+    "token.api_mode": ("web", "Token获取方式：web-网页接口/remote-远程接口"),
+    "token.remote_url": ("", "Token远程接口URL"),
+    "token.remote_secret_key": ("", "Token远程接口秘钥"),
 }
 
 # 不需要XSS转义的键（布尔值、数字等）
@@ -114,11 +135,22 @@ NO_ESCAPE_KEYS = {
     "captcha.remote_secret_key",
     # 是否传递账号Cookie：布尔字符串"true"/"false"，无需转义
     "captcha.remote_pass_cookies",
+    "captcha.block_remote_calls",
+    "captcha.local_slider_disabled",
+    "captcha.remote_processing_max",
+    "captcha.remote_cooldown_seconds",
+    "captcha.remote_cooldown_until",
+    "captcha.slider_mode",
     # real_mouse 排队权重：数字字符串，无需 XSS 转义
     "captcha.real_mouse_weight_local",
     "captcha.real_mouse_weight_remote",
     # 账号密码登录模式：枚举字符串，无需转义
     "password_login.mode",
+    # Token获取方式：枚举字符串，无需转义
+    "token.api_mode",
+    # Token远程接口配置：URL 和秘钥不能被 XSS 转义
+    TOKEN_REMOTE_URL_SETTING_KEY,
+    TOKEN_REMOTE_SECRET_KEY_SETTING_KEY,
 }
 
 
@@ -154,6 +186,20 @@ class SystemSettingService:
             if not include_sensitive and entry.key in SENSITIVE_KEYS:
                 continue
             settings[entry.key] = entry.value
+        password_login_mode = str(settings.get("password_login.mode") or "").strip().lower()
+        settings["password_login.mode"] = (
+            password_login_mode
+            if password_login_mode in {"protocol", "browser"}
+            else "browser"
+        )
+        slider_mode = str(settings.get("captcha.slider_mode") or "").strip().lower()
+        settings["captcha.slider_mode"] = (
+            slider_mode if slider_mode in {"browser", "real_mouse"} else "browser"
+        )
+        # Token获取方式：非法值统一回落到默认的网页接口
+        settings[TOKEN_API_MODE_SETTING_KEY] = normalize_token_api_mode(
+            settings.get(TOKEN_API_MODE_SETTING_KEY)
+        )
         return settings
 
     async def set_setting(self, key: str, value: str, description: str | None = None) -> None:
@@ -173,4 +219,38 @@ class SystemSettingService:
             record = SystemSetting(key=key, value=safe_value, description=safe_description)
 
         self.session.add(record)
+        await self.session.commit()
+
+    async def set_settings(self, settings: Dict[str, tuple[str, str | None]]) -> None:
+        """在同一事务中批量保存系统设置。
+
+        Args:
+            settings: ``{设置键: (设置值, 设置说明)}`` 映射。
+
+        Returns:
+            无返回值；全部设置成功后统一提交。
+        """
+        if not settings:
+            return
+
+        stmt = select(SystemSetting).where(SystemSetting.key.in_(tuple(settings.keys())))
+        result = await self.session.execute(stmt)
+        records = {record.key: record for record in result.scalars().all()}
+
+        for key, (value, description) in settings.items():
+            safe_value = value if key in NO_ESCAPE_KEYS else escape_xss(value)
+            safe_description = escape_xss(description) if description else None
+            record = records.get(key)
+            if record:
+                record.value = safe_value
+                if description is not None:
+                    record.description = safe_description
+            else:
+                record = SystemSetting(
+                    key=key,
+                    value=safe_value,
+                    description=safe_description,
+                )
+            self.session.add(record)
+
         await self.session.commit()

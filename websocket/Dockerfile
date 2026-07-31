@@ -27,7 +27,16 @@ RUN apt-get update && apt-get install -y \
 RUN pip install playwright && \
     python -m playwright install --with-deps chromium
 
-# 创建目录结构
+# 从pyproject.toml提取并安装依赖
+RUN python -c "\
+import tomllib; \
+deps = tomllib.load(open('/app/websocket/pyproject.toml','rb')).get('project',{}).get('dependencies',[]); \
+open('/tmp/requirements.txt','w').write('\n'.join(deps))" && \
+    pip install --no-cache-dir -r /tmp/requirements.txt
+
+# 安装Playwright浏览器（--with-deps 自动安装系统依赖）
+RUN python -m playwright install --with-deps chromium
+RUN python -m patchright install --with-deps chromium
 RUN mkdir -p /app/websocket/logs /app/static /app/browser_data
 
 # 复制启动脚本（构建时复制，但映射后会使用映射的版本）
