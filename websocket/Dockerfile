@@ -22,7 +22,12 @@ RUN apt-get update && apt-get install -y \
     && update-ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# 复制项目源码
+# 预安装 Playwright（不依赖源码，利用 Docker 缓存避免每次下载浏览器）
+RUN pip install playwright patchright && \
+    python -m playwright install --with-deps chromium && \
+    python -m patchright install --with-deps chromium
+
+# 复制项目源码（经常变动的放后面）
 COPY common /app/common
 COPY websocket /app/websocket
 
@@ -32,10 +37,6 @@ import tomllib; \
 deps = tomllib.load(open('/app/websocket/pyproject.toml','rb')).get('project',{}).get('dependencies',[]); \
 open('/tmp/requirements.txt','w').write('\n'.join(deps))" && \
     pip install --no-cache-dir -r /tmp/requirements.txt
-
-# 安装Playwright浏览器（--with-deps 自动安装系统依赖）
-RUN python -m playwright install --with-deps chromium
-RUN python -m patchright install --with-deps chromium
 
 # 创建目录
 RUN mkdir -p /app/websocket/logs /app/static /app/browser_data

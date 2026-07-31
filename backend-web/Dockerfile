@@ -18,7 +18,12 @@ RUN apt-get update && apt-get install -y curl ca-certificates gcc \
     && update-ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# 复制项目源码
+# 预安装 Playwright（不依赖源码，利用 Docker 缓存避免每次下载浏览器）
+RUN pip install playwright patchright && \
+    python -m playwright install --with-deps chromium && \
+    python -m patchright install --with-deps chromium
+
+# 复制项目源码（经常变动的放后面）
 COPY common /app/common
 COPY backend-web /app/backend-web
 COPY launcher /app/launcher
@@ -29,9 +34,6 @@ import tomllib; \
 deps = tomllib.load(open('/app/backend-web/pyproject.toml','rb')).get('project',{}).get('dependencies',[]); \
 open('/tmp/requirements.txt','w').write('\n'.join(deps))" && \
     pip install --no-cache-dir -r /tmp/requirements.txt
-
-RUN python -m playwright install --with-deps chromium
-RUN python -m patchright install --with-deps chromium
 
 # 创建日志目录
 RUN mkdir -p /app/backend-web/logs /app/static/uploads
