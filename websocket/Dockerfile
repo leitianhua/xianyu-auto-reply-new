@@ -22,10 +22,9 @@ RUN apt-get update && apt-get install -y \
     && update-ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# 预安装 Playwright 浏览器（这个很慢，构建时安装）
-# 注意：如果需要更新 Playwright 版本，需要重新构建镜像
-RUN pip install playwright && \
-    python -m playwright install --with-deps chromium
+# 复制项目源码
+COPY common /app/common
+COPY websocket /app/websocket
 
 # 从pyproject.toml提取并安装依赖
 RUN python -c "\
@@ -37,9 +36,11 @@ open('/tmp/requirements.txt','w').write('\n'.join(deps))" && \
 # 安装Playwright浏览器（--with-deps 自动安装系统依赖）
 RUN python -m playwright install --with-deps chromium
 RUN python -m patchright install --with-deps chromium
+
+# 创建目录
 RUN mkdir -p /app/websocket/logs /app/static /app/browser_data
 
-# 复制启动脚本（构建时复制，但映射后会使用映射的版本）
+# 复制启动脚本
 COPY websocket/start.sh /app/start.sh
 RUN chmod +x /app/start.sh
 
